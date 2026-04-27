@@ -1,0 +1,336 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "FSL",
+  "scopeName": "source.fsl",
+  "fileTypes": [
+    "fsl"
+  ],
+  "patterns": [
+    {
+      "include": "#comments"
+    },
+    {
+      "include": "#strings"
+    },
+    {
+      "include": "#numbers"
+    },
+    {
+      "include": "#keywords_control"
+    },
+    {
+      "include": "#keywords_declaration"
+    },
+    {
+      "include": "#keywords_modifier"
+    },
+    {
+      "include": "#keywords_special"
+    },
+    {
+      "include": "#types"
+    },
+    {
+      "include": "#builtin_vars"
+    },
+    {
+      "include": "#system_functions"
+    },
+    {
+      "include": "#builtin_methods"
+    },
+    {
+      "include": "#operators"
+    },
+    {
+      "include": "#module_def"
+    },
+    {
+      "include": "#trait_def"
+    },
+    {
+      "include": "#function_call"
+    },
+    {
+      "include": "#identifiers"
+    }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.line.double-slash.fsl",
+          "match": "//.*$"
+        },
+        {
+          "name": "comment.block.fsl",
+          "begin": "/\\*",
+          "end": "\\*/",
+          "beginCaptures": {
+            "0": {
+              "name": "punctuation.definition.comment.begin.fsl"
+            }
+          },
+          "endCaptures": {
+            "0": {
+              "name": "punctuation.definition.comment.end.fsl"
+            }
+          }
+        }
+      ]
+    },
+    "strings": {
+      "name": "string.quoted.double.fsl",
+      "begin": "\"",
+      "end": "\"",
+      "patterns": [
+        {
+          "name": "constant.character.escape.fsl",
+          "match": "\\\\[nt\\\\\"']"
+        },
+        {
+          "name": "constant.other.placeholder.fsl",
+          "match": "%[dxb]"
+        }
+      ]
+    },
+    "numbers": {
+      "patterns": [
+        {
+          "name": "constant.numeric.binary.fsl",
+          "match": "\\b0b[01_]+"
+        },
+        {
+          "name": "constant.numeric.hex.fsl",
+          "match": "\\b0x[0-9a-fA-F_]+"
+        },
+        {
+          "name": "constant.numeric.decimal.fsl",
+          "match": "\\b[0-9][0-9_]*"
+        },
+        {
+          "name": "constant.language.boolean.fsl",
+          "match": "\\b(true|false)\\b"
+        }
+      ]
+    },
+    "keywords_control": {
+      "name": "keyword.control.fsl",
+      "match": "\\b(if|else|match|case|par|seq|always|initial|generate|relay|finish|goto)\\b"
+    },
+    "keywords_declaration": {
+      "name": "keyword.declaration.fsl",
+      "match": "\\b(module|trait|stage|state|def|type|val|reg|mem|input|output|new)\\b"
+    },
+    "keywords_modifier": {
+      "name": "storage.modifier.fsl",
+      "match": "\\b(private|extends|with)\\b"
+    },
+    "keywords_special": {
+      "name": "keyword.other.fsl",
+      "match": "\\b(Simulator)\\b"
+    },
+    "types": {
+      "patterns": [
+        {
+          "name": "support.type.fsl",
+          "match": "\\b(Unit|Boolean|Int|String)\\b"
+        },
+        {
+          "name": "support.type.bit.fsl",
+          "match": "\\b(Bit)\\s*(?=\\()",
+          "captures": {
+            "1": {
+              "name": "support.type.fsl"
+            }
+          }
+        },
+        {
+          "name": "support.type.collection.fsl",
+          "match": "\\b(Array|List)\\s*(?=\\[)"
+        },
+        {
+          "comment": "Bit(n) 全体をハイライト",
+          "name": "meta.type.bit.fsl",
+          "match": "\\b(Bit)\\((\\d+)\\)",
+          "captures": {
+            "1": {
+              "name": "support.type.fsl"
+            },
+            "2": {
+              "name": "constant.numeric.decimal.fsl"
+            }
+          }
+        },
+        {
+          "comment": "型コンストラクタ .zero/.one/.allOne",
+          "name": "meta.type.literal.fsl",
+          "match": "\\b(Bit)\\((\\d+)\\)\\.(zero|one|allOne)\\b",
+          "captures": {
+            "1": {
+              "name": "support.type.fsl"
+            },
+            "2": {
+              "name": "constant.numeric.decimal.fsl"
+            },
+            "3": {
+              "name": "support.function.fsl"
+            }
+          }
+        }
+      ]
+    },
+    "builtin_vars": {
+      "comment": "組み込み変数 (_time など)",
+      "name": "variable.language.fsl",
+      "match": "\\b_time\\b"
+    },
+    "system_functions": {
+      "comment": "アンダースコアで始まるシステム関数",
+      "name": "support.function.builtin.fsl",
+      "match": "\\b(_display|_finish|_readmemb|_readmemh)\\b"
+    },
+    "builtin_methods": {
+      "comment": "後置メソッド .msb .lsb .toBit .isRunning .zero .one .allOne",
+      "patterns": [
+        {
+          "name": "support.function.fsl",
+          "match": "\\.(msb|lsb|isRunning|zero|one|allOne)\\b"
+        },
+        {
+          "comment": ".toBit(n)",
+          "match": "\\.(toBit)\\((\\d+)\\)",
+          "captures": {
+            "1": {
+              "name": "support.function.fsl"
+            },
+            "2": {
+              "name": "constant.numeric.decimal.fsl"
+            }
+          }
+        }
+      ]
+    },
+    "operators": {
+      "patterns": [
+        {
+          "name": "keyword.operator.assignment.fsl",
+          "match": ":="
+        },
+        {
+          "name": "keyword.operator.arrow.fsl",
+          "match": "=>"
+        },
+        {
+          "name": "keyword.operator.assignment.fsl",
+          "match": "(?<![=!<>])=(?!=)"
+        },
+        {
+          "name": "keyword.operator.comparison.fsl",
+          "match": "==|!=|<=|>=|<|>"
+        },
+        {
+          "name": "keyword.operator.logical.fsl",
+          "match": "&&|\\|\\||!"
+        },
+        {
+          "name": "keyword.operator.shift.fsl",
+          "match": ">>>|>>|<<"
+        },
+        {
+          "name": "keyword.operator.bitconcat.fsl",
+          "match": "\\+\\+"
+        },
+        {
+          "name": "keyword.operator.arithmetic.fsl",
+          "match": "[+\\-*]"
+        },
+        {
+          "name": "keyword.operator.bitwise.fsl",
+          "match": "[&|^~]"
+        },
+        {
+          "name": "keyword.operator.signext.fsl",
+          "comment": "符号拡張演算子 # (n # a)",
+          "match": "(?<=[0-9])\\s*#|#\\s*(?=[a-zA-Z_])"
+        }
+      ]
+    },
+    "module_def": {
+      "comment": "module Foo extends Bar with Baz",
+      "name": "meta.definition.module.fsl",
+      "match": "\\b(module)\\s+([A-Za-z_][A-Za-z0-9_]*)(?:\\s+(extends)\\s+([A-Za-z_][A-Za-z0-9_]*))?(?:\\s+(with)\\s+([A-Za-z_][A-Za-z0-9_]*))*",
+      "captures": {
+        "1": {
+          "name": "keyword.declaration.fsl"
+        },
+        "2": {
+          "name": "entity.name.type.module.fsl"
+        },
+        "3": {
+          "name": "storage.modifier.fsl"
+        },
+        "4": {
+          "name": "entity.other.inherited-class.fsl"
+        },
+        "5": {
+          "name": "storage.modifier.fsl"
+        },
+        "6": {
+          "name": "entity.other.inherited-class.fsl"
+        }
+      }
+    },
+    "trait_def": {
+      "comment": "trait Foo",
+      "name": "meta.definition.trait.fsl",
+      "match": "\\b(trait)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+      "captures": {
+        "1": {
+          "name": "keyword.declaration.fsl"
+        },
+        "2": {
+          "name": "entity.name.type.trait.fsl"
+        }
+      }
+    },
+    "function_call": {
+      "patterns": [
+        {
+          "comment": "関数・ステージ定義: def foo(...) or stage foo(...)",
+          "match": "\\b(def|stage|state)\\s+([A-Za-z_][A-Za-z0-9_\\.]*)",
+          "captures": {
+            "1": {
+              "name": "keyword.declaration.fsl"
+            },
+            "2": {
+              "name": "entity.name.function.fsl"
+            }
+          }
+        },
+        {
+          "comment": "関数呼び出し: foo(...) or inst.foo(...)",
+          "match": "\\b([A-Za-z_][A-Za-z0-9_]*)(?=\\s*\\()",
+          "captures": {
+            "1": {
+              "name": "entity.name.function.call.fsl"
+            }
+          }
+        },
+        {
+          "comment": "インスタンスメソッド呼び出し: inst.foo(...)",
+          "match": "\\.([A-Za-z_][A-Za-z0-9_]*)(?=\\s*\\()",
+          "captures": {
+            "1": {
+              "name": "entity.name.function.call.fsl"
+            }
+          }
+        }
+      ]
+    },
+    "identifiers": {
+      "name": "variable.other.fsl",
+      "match": "\\b[A-Za-z_][A-Za-z0-9_]*\\b"
+    }
+  }
+}
