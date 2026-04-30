@@ -1,0 +1,9 @@
+[package]
+name = "fsl-analyzer"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+
+[dependencies]
+fsl-parser = { path = "../fsl-parser" }
+fsl-lexer = { path = "../fsl-lexer" }
