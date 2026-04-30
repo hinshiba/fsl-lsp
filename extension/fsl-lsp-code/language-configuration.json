@@ -36,8 +36,13 @@
     {
       "open": "\"",
       "close": "\""
+    },
+    {
+      "open": "/*",
+      "close": "*/"
     }
   ],
+  "autoCloseBefore": ";:.,=}])>` \n\t",
   "surroundingPairs": [
     [
       "{",
