@@ -1,0 +1,53 @@
+/* (alu32.fsl) */
+
+module alu32 {
+  input         a: Bit(32)
+  input         b: Bit(32)
+  output      out: Bit(32)
+  output overflow: Bit(1)
+  output     zero: Bit(1)
+
+  /* モジュールの利用 */
+  val addr = new add32
+
+  def op_add(a, b): Unit = {
+    addr.add(a, b, 0b0);
+    
+    out = addr.sum;
+    /* 符号の一致かつ符号変化ならov */
+    overflow = (~(a.msb ^ b.msb)) & (a.msb ^ addr.sum.msb);
+    zero = if (a == ~b + 0b1) 0b1 else 0b0;  /* 加算に依存しないので早いのでは? */
+  }
+
+  def op_sub(a, b): Unit = {
+    addr.add(a, ~b, 0b1);
+    
+    out = addr.sum;
+    overflow = (a.msb ^ b.msb) & (a.msb ^ addr.sum.msb);
+    zero =   if (a == b) 0b1 else 0b0;  /* 同様 */
+  }
+  
+  def op_and(a, b): Unit = {
+    out = a & b;
+    overflow = 0b0;
+    zero = ~(|out);  /* リダクション演算の活用 */ 
+  }
+
+  def op_or(a, b): Unit = {
+    out = a | b;
+    overflow = 0b0;
+    zero = ~(|out);
+  }
+  def op_xor(a, b): Unit = {
+    out = a ^ b;
+    overflow = 0b0;
+    zero = ~(|out);
+  }
+  def op_nor(a, b): Unit = {
+    out = ~(a | b)
+    overflow = 0b0;
+    zero = ~(|out);
+  }
+} // module alu32
+
+/* End of file (alu32.fsl) */

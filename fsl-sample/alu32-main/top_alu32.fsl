@@ -1,0 +1,50 @@
+/* (top_alu32.fsl) */
+
+module top_alu32 {
+  input         a: Bit(32)
+  input         b: Bit(32)
+  input        op: Bit(3)
+  output      out: Bit(32)
+  output overflow: Bit(1)
+  output     zero: Bit(1)
+
+  val a0 = new alu32
+
+  /* input register */
+  reg        reg_a: Bit(32)
+  reg        reg_b: Bit(32)
+  reg       reg_op: Bit(3)
+  /* output register */
+  reg      reg_out: Bit(32)
+  reg reg_overflow: Bit(1)
+  reg     reg_zero: Bit(1)
+
+  always {
+    out      = reg_out
+    overflow = reg_overflow
+    zero     = reg_zero
+  }
+
+  def set_input(a, b, op): Unit = {
+    reg_a   := a
+    reg_b   := b
+    reg_op  := op
+  }
+
+  def exec(): Unit = {
+    op match {
+      case 0b000 => a0.op_add(reg_a, reg_b)
+      case 0b001 => a0.op_sub(reg_a, reg_b)
+      case 0b010 => a0.op_and(reg_a, reg_b)
+      case 0b011 => a0.op_or(reg_a, reg_b)
+      case 0b100 => a0.op_xor(reg_a, reg_b)
+      case 0b101 => a0.op_nor(reg_a, reg_b)
+      case _ => {}
+    }
+    reg_out      := a0.out
+    reg_overflow := a0.overflow
+    reg_zero     := a0.zero
+  }
+  
+}
+/* End of file (top_alu32.fsl) */

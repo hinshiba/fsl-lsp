@@ -1,0 +1,15 @@
+/* (mult32.fsl) */
+
+module mult32 {
+  input    a: Bit(32)
+  input    b: Bit(32)
+  output out: Bit(64)
+
+  output def en(): Unit
+
+  def mult(a, b): Unit = {
+    // ...
+  }
+} // module mult32
+
+/* End of file (mult32.fsl) */
