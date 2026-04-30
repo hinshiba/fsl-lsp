@@ -1,10 +1,10 @@
 {
-  "name": "fsl-lsp",
-  "displayName": "fsl-lsp",
-  "description": "",
-  "version": "0.0.1",
+  "name": "fsl-lsp-code",
+  "displayName": "fsl-lsp-code",
+  "description": "fsl言語サービスを提供",
+  "version": "0.1.0",
   "engines": {
-    "vscode": "^1.116.0"
+    "vscode": "^1.118.0"
   },
   "categories": [
     "Programming Languages"
@@ -31,30 +31,24 @@
         "scopeName": "source.fsl",
         "path": "./syntaxes/fsl.tmLanguage.json"
       }
-    ],
-    "commands": [
-      {
-        "command": "fsl-lsp.helloWorld",
-        "title": "Hello World"
-      }
     ]
   },
   "scripts": {
-    "vscode:prepublish": "npm run package",
-    "compile": "npm run check-types && npm run lint && node esbuild.js",
+    "vscode:prepublish": "pnpm run package",
+    "compile": "pnpm run check-types && pnpm run lint && node esbuild.js",
     "watch": "npm-run-all -p watch:*",
     "watch:esbuild": "node esbuild.js --watch",
     "watch:tsc": "tsc --noEmit --watch --project tsconfig.json",
-    "package": "npm run check-types && npm run lint && node esbuild.js --production",
+    "package": "pnpm run check-types && pnpm run lint && node esbuild.js --production",
     "compile-tests": "tsc -p . --outDir out",
     "watch-tests": "tsc -p . -w --outDir out",
-    "pretest": "npm run compile-tests && npm run compile && npm run lint",
+    "pretest": "pnpm run compile-tests && pnpm run compile && pnpm run lint",
     "check-types": "tsc --noEmit",
     "lint": "eslint src",
     "test": "vscode-test"
   },
   "devDependencies": {
-    "@types/vscode": "^1.116.0",
+    "@types/vscode": "^1.118.0",
     "@types/mocha": "^10.0.10",
     "@types/node": "22.x",
     "typescript-eslint": "^8.56.1",
