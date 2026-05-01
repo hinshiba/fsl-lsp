@@ -1,4 +1,4 @@
-//! FSL のアナライザ（ひな形）
+//! FSL のアナライザ
 //!
 //! 計画フェーズ1の最小構成として，シンボルテーブルの構築と
 //! 簡易的な診断生成のインタフェースを定義する．
@@ -45,9 +45,7 @@ impl SymbolType {
             },
             TypeKind::Array(inner) => SymbolType::Array(Box::new(Self::from_ast(inner))),
             TypeKind::List(inner) => SymbolType::List(Box::new(Self::from_ast(inner))),
-            TypeKind::Tuple(elems) => {
-                SymbolType::Tuple(elems.iter().map(Self::from_ast).collect())
-            }
+            TypeKind::Tuple(elems) => SymbolType::Tuple(elems.iter().map(Self::from_ast).collect()),
             TypeKind::Named(name) => SymbolType::Named(name.node.clone()),
         }
     }
@@ -265,15 +263,13 @@ fn analyze_module(_m: &ModuleDef, _result: &mut AnalysisResult) {
 }
 
 // ============================================================
-// 訪問者ヘルパ（ひな形）
+// 訪問者ヘルパ
 // ============================================================
 //
 // 後続のフェーズで以下の訪問者群を実装する．
 // - 式の自由変数収集
 // - val 再代入検出
 // - private 呼び出し検出
-//
-// シグネチャだけを提示する．
 
 #[allow(dead_code)]
 fn collect_free_vars(_e: &Expr) -> Vec<String> {
