@@ -1,0 +1,30 @@
+/* (mult32.fsl) */
+
+module mult32 {
+  input    a: Bit(32)
+  input    b: Bit(32)
+  output out: Bit(64)
+
+  output def en(out): Unit
+
+  def mult(a, b): Unit = {
+    generate mult4(a.toBit(64), b, Bit(64).zero);
+  }
+
+  // bの下位4bitに応じてaをaccに加算し，bを4bit右シフト
+  stage mult4(a: Bit(64), b: Bit(32), acc: Bit(64)) {
+    val t1 = if(b(0) == 0b1) a + acc else acc;
+    val t2 = if(b(1) == 0b1) (a << 1) + t1 else t1;
+    val t3 = if(b(2) == 0b1) (a << 2) + t2 else t2;
+    val t4 = if(b(3) == 0b1) (a << 3) + t3 else t3;
+    val bb = b >>> 4;
+    if (bb == Bit(32).zero) {
+      en(t4);
+      finish;
+    } else {
+      relay mult4(a << 4, bb, t4);
+    }    
+  }
+} // module mult32
+
+/* End of file (mult32.fsl) */

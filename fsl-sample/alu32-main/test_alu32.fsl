@@ -1,0 +1,43 @@
+/* (test_alu32.fsl) */
+
+module test_alu32 extends Simulator {
+  val a0 = new alu32
+  reg count: Bit(12)
+  mem [Bit(70)] pat(16)
+  initial {
+    _readmemb("test_alu32.pat", pat)
+  }
+  always {
+    count := count + 1
+    //
+    if (2 <= count && count <= 17) par {
+      val i = count - 2
+      val p = pat(i)
+      val a  = p(69, 38)
+      val b = p(37, 6)
+      val f = p(5, 0)
+
+      f match {
+	case 0b100000 => a0.op_add(a, b)
+	case 0b010000 => a0.op_sub(a, b)
+	case 0b001000 => a0.op_and(a, b)
+	case 0b000100 => a0.op_or(a, b)
+	case 0b000010 => a0.op_xor(a, b)
+	case 0b000001 => a0.op_nor(a, b)
+      }
+      val (out, zero, ov) = (a0.out, a0.zero, a0.overflow)
+      // バイナリ
+//      _display("%d %b %b %b %b %b %b",
+//	       i, a, b, f, out, zero, ov)
+      //10進数
+//      _display("%d %d %d %b %d %b %b",
+//	       i, a, b, f, out, zero, ov)
+      // 16進数
+      _display("%d %x %x %b %x %b %b",
+	       i, a, b, f, out, zero, ov)
+    }
+    if (count == 17) _finish("bye")
+  }
+}
+
+/* End of file (test_alu32.fsl) */
