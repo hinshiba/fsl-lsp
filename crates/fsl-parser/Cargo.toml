@@ -5,5 +5,5 @@ edition.workspace = true
 authors.workspace = true
 
 [dependencies]
-chumsky = "0.12.0"
+chumsky = { version = "0.12.0", features = ["pratt"] }
 fsl-lexer = { path = "../fsl-lexer" }

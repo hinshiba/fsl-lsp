@@ -1,11 +1,13 @@
 //! FSL の構文解析器
 //!
-//! 手書き再帰下降パーサで実装する．
-//! 計画では chumsky 0.12 の使用を想定しているが，
-//! チュートリアル例を確実に処理することを優先し，まずは手書きで実装する．
-//! 後続フェーズで chumsky への置換を検討する．
+//! 入力は `fsl-lexer` のトリビア除去済みトークン列．
 
-use crate::ast::*;
+use chumsky::input::{Input, MappedInput};
+use chumsky::pratt::{infix, left, postfix, prefix};
+use chumsky::prelude::*;
+use chumsky::recursive::Recursive;
+
+use crate::ast::{self, *};
 use fsl_lexer::{Span, Token};
 
 /// 構文エラー
@@ -22,1353 +24,1009 @@ pub struct ParseResult {
     pub errors: Vec<ParseError>,
 }
 
-struct Parser {
-    tokens: Vec<(Token, Span)>,
-    pos: usize,
-    errors: Vec<ParseError>,
-    src_end: usize,
+fn token_proj(t: &(Token, Span)) -> (&Token, &Span) {
+    (&t.0, &t.1)
 }
 
-/// ソース末尾位置．エラー報告のフォールバックに用いる．
-fn end_span(end: usize) -> Span {
-    end..end
-}
+type Toks<'a> =
+    MappedInput<'a, Token, Span, &'a [(Token, Span)], fn(&(Token, Span)) -> (&Token, &Span)>;
+type Extra<'a> = extra::Err<Rich<'a, Token, Span>>;
 
+/// パースエントリポイント．
 pub fn parse(tokens: Vec<(Token, Span)>, src_end: usize) -> ParseResult {
-    let mut p = Parser {
-        tokens,
-        pos: 0,
-        errors: Vec::new(),
-        src_end,
-    };
-    let unit = p.parse_compilation_unit();
-    ParseResult {
-        unit,
-        errors: p.errors,
+    let eoi: Span = src_end..src_end;
+    let proj: fn(&(Token, Span)) -> (&Token, &Span) = token_proj;
+    let stream = tokens.as_slice().map(eoi, proj);
+    let (unit_opt, errs) = parser().parse(stream).into_output_errors();
+    let unit = unit_opt.unwrap_or_default();
+    let errors = errs
+        .into_iter()
+        .map(|e| ParseError {
+            message: format!("{:?}", e),
+            span: e.span().clone(),
+        })
+        .collect();
+    ParseResult { unit, errors }
+}
+
+// ============================================================
+// 補助
+// ============================================================
+
+fn ident<'a>() -> impl Parser<'a, Toks<'a>, Ident, Extra<'a>> + Clone {
+    select_ref! {
+        Token::Ident(s) = e => ast::Spanned::new(s.clone(), e.span())
     }
 }
 
-impl Parser {
-    // ----- 基本ヘルパ -----
+// ============================================================
+// メインパーサ
+// ============================================================
 
-    fn peek(&self) -> Option<&Token> {
-        self.tokens.get(self.pos).map(|(t, _)| t)
-    }
+fn parser<'a>() -> impl Parser<'a, Toks<'a>, CompilationUnit, Extra<'a>> {
+    // ---- 前方宣言 ----
+    let mut expr = Recursive::declare();
+    let mut stmt = Recursive::declare();
+    let mut block = Recursive::declare();
+    let mut ty = Recursive::declare();
 
-    fn current_span(&self) -> Span {
-        self.tokens
-            .get(self.pos)
-            .map(|(_, s)| s.clone())
-            .unwrap_or_else(|| end_span(self.src_end))
-    }
+    // ---- 型 ----
+    {
+        // パディング: `;` を任意個数許容
+        let named_or_builtin = ident().map_with(|name, e| {
+            let span: Span = e.span();
+            let kind = match name.node.as_str() {
+                "Unit" => TypeKind::Unit,
+                "Boolean" => TypeKind::Boolean,
+                "Int" => TypeKind::Int,
+                "String" => TypeKind::String,
+                _ => TypeKind::Named(name.clone()),
+            };
+            Type { kind, span }
+        });
 
-    fn previous_span(&self) -> Span {
-        if self.pos == 0 {
-            end_span(0)
-        } else {
-            self.tokens[self.pos - 1].1.clone()
-        }
-    }
-
-    fn at_end(&self) -> bool {
-        self.pos >= self.tokens.len()
-    }
-
-    fn advance(&mut self) -> Option<(Token, Span)> {
-        if self.at_end() {
-            None
-        } else {
-            let r = self.tokens[self.pos].clone();
-            self.pos += 1;
-            Some(r)
-        }
-    }
-
-    fn check(&self, kind: &Token) -> bool {
-        matches!(self.peek(), Some(t) if std::mem::discriminant(t) == std::mem::discriminant(kind))
-    }
-
-    fn eat(&mut self, kind: &Token) -> bool {
-        if self.check(kind) {
-            self.advance();
-            true
-        } else {
-            false
-        }
-    }
-
-    fn expect(&mut self, kind: &Token, what: &str) -> Option<Span> {
-        if self.check(kind) {
-            let span = self.current_span();
-            self.advance();
-            Some(span)
-        } else {
-            let span = self.current_span();
-            self.errors.push(ParseError {
-                message: format!("expected {}, got {:?}", what, self.peek()),
-                span,
+        let bit_ty = just(Token::Ident("Bit".to_string()))
+            .ignore_then(
+                expr.clone()
+                    .delimited_by(just(Token::LParen), just(Token::RParen)),
+            )
+            .map_with(|n, e| Type {
+                kind: TypeKind::Bit(Box::new(n)),
+                span: e.span(),
             });
-            None
-        }
+
+        let array_ty = just(Token::Ident("Array".to_string()))
+            .ignore_then(
+                ty.clone()
+                    .delimited_by(just(Token::LBracket), just(Token::RBracket)),
+            )
+            .map_with(|inner, e| Type {
+                kind: TypeKind::Array(Box::new(inner)),
+                span: e.span(),
+            });
+
+        let list_ty = just(Token::Ident("List".to_string()))
+            .ignore_then(
+                ty.clone()
+                    .delimited_by(just(Token::LBracket), just(Token::RBracket)),
+            )
+            .map_with(|inner, e| Type {
+                kind: TypeKind::List(Box::new(inner)),
+                span: e.span(),
+            });
+
+        let tuple_ty = ty
+            .clone()
+            .separated_by(just(Token::Comma))
+            .allow_trailing()
+            .collect::<Vec<_>>()
+            .delimited_by(just(Token::LParen), just(Token::RParen))
+            .map_with(|tys, e| Type {
+                kind: TypeKind::Tuple(tys),
+                span: e.span(),
+            });
+
+        // Bit/Array/List は識別子として字句化されるため，最初に試す
+        ty.define(choice((
+            bit_ty,
+            array_ty,
+            list_ty,
+            tuple_ty,
+            named_or_builtin,
+        )));
     }
 
-    fn expect_ident(&mut self, what: &str) -> Option<Ident> {
-        match self.peek() {
-            Some(Token::Ident(_)) => {
-                let (tok, span) = self.advance().unwrap();
-                if let Token::Ident(s) = tok {
-                    Some(Spanned::new(s, span))
+    // ---- 識別子リスト・パラメータ列 ----
+    let param = ident()
+        .then(just(Token::Colon).ignore_then(ty.clone()).or_not())
+        .map(|(name, ty)| Param { name, ty });
+
+    let params = param
+        .separated_by(just(Token::Comma))
+        .allow_trailing()
+        .collect::<Vec<_>>()
+        .delimited_by(just(Token::LParen), just(Token::RParen));
+
+    // ---- パターン ----
+    let pattern = {
+        let wildcard = select_ref! {
+            Token::Ident(s) if s == "_" => Pattern::Wildcard
+        };
+        let id_pat = ident().map(Pattern::Ident);
+        let int_pat = select_ref! {
+            Token::IntLit(s) => Pattern::IntLit(s.clone())
+        };
+        // ワイルドカードを先に試す（`_` も Ident トークン）
+        choice((wildcard, int_pat, id_pat))
+    };
+
+    // ---- 式 ----
+    {
+        let int_lit = select_ref! {
+            Token::IntLit(s) = e => Expr {
+                kind: ExprKind::Int(s.clone()),
+                span: e.span(),
+            }
+        };
+        let str_lit = select_ref! {
+            Token::StringLit(s) = e => Expr {
+                kind: ExprKind::Str(s.clone()),
+                span: e.span(),
+            }
+        };
+        let true_lit = just(Token::True).map_with(|_, e| Expr {
+            kind: ExprKind::Bool(true),
+            span: e.span(),
+        });
+        let false_lit = just(Token::False).map_with(|_, e| Expr {
+            kind: ExprKind::Bool(false),
+            span: e.span(),
+        });
+
+        let path_expr = ident().map_with(|id, e| Expr {
+            kind: ExprKind::Path(id),
+            span: e.span(),
+        });
+
+        // 括弧式・タプル・Unit
+        let paren_or_tuple = expr
+            .clone()
+            .separated_by(just(Token::Comma))
+            .allow_trailing()
+            .collect::<Vec<_>>()
+            .delimited_by(just(Token::LParen), just(Token::RParen))
+            .map_with(|elems, e| {
+                let span: Span = e.span();
+                if elems.is_empty() {
+                    Expr {
+                        kind: ExprKind::Unit,
+                        span,
+                    }
+                } else if elems.len() == 1 {
+                    let mut elems = elems;
+                    elems.remove(0)
                 } else {
-                    unreachable!()
+                    Expr {
+                        kind: ExprKind::Tuple(elems),
+                        span,
+                    }
                 }
-            }
-            _ => {
-                let span = self.current_span();
-                self.errors.push(ParseError {
-                    message: format!("expected {}, got {:?}", what, self.peek()),
-                    span,
-                });
-                None
-            }
-        }
-    }
+            });
 
-    /// 同期点までトークンを読み飛ばす
-    fn synchronize_to_top(&mut self) {
-        while let Some(t) = self.peek() {
-            if matches!(t, Token::Module | Token::Trait) {
-                break;
+        let block_expr = block.clone().map(|b: Block| {
+            let span = b.span.clone();
+            Expr {
+                kind: ExprKind::Block(b),
+                span,
             }
-            self.advance();
-        }
-    }
+        });
 
-    /// ブロック内の同期．次の `}` あるいは文の頭らしきトークンへ進む．
-    fn synchronize_in_block(&mut self) {
-        let mut depth = 0;
-        while let Some(t) = self.peek() {
-            match t {
-                Token::LBrace => depth += 1,
-                Token::RBrace if depth == 0 => return,
-                Token::RBrace => depth -= 1,
-                Token::Semicolon if depth == 0 => {
-                    self.advance();
-                    return;
-                }
-                _ => {}
-            }
-            self.advance();
-        }
-    }
-
-    // ----- トップレベル -----
-
-    fn parse_compilation_unit(&mut self) -> CompilationUnit {
-        let mut items = Vec::new();
-        while !self.at_end() {
-            // セミコロンや余分な区切りを許容
-            if self.eat(&Token::Semicolon) {
-                continue;
-            }
-            match self.parse_item() {
-                Some(item) => items.push(item),
-                None => self.synchronize_to_top(),
-            }
-        }
-        CompilationUnit { items }
-    }
-
-    fn parse_item(&mut self) -> Option<Item> {
-        match self.peek()? {
-            Token::Module => self.parse_module().map(Item::Module),
-            Token::Trait => self.parse_trait().map(Item::Trait),
-            _ => {
-                let span = self.current_span();
-                self.errors.push(ParseError {
-                    message: format!("expected item, got {:?}", self.peek()),
-                    span,
-                });
-                self.advance();
-                None
-            }
-        }
-    }
-
-    fn parse_module(&mut self) -> Option<ModuleDef> {
-        let start = self.current_span().start;
-        self.expect(&Token::Module, "`module`")?;
-        let name = self.expect_ident("module name")?;
-
-        let extends = if self.eat(&Token::Extends) {
-            Some(self.expect_ident("trait or module name")?)
-        } else {
-            None
+        // if 式
+        let if_expr = {
+            let cond = expr
+                .clone()
+                .delimited_by(just(Token::LParen), just(Token::RParen));
+            let then_branch = then_or_else_branch(stmt.clone(), expr.clone(), block.clone());
+            just(Token::If)
+                .ignore_then(cond)
+                .then(then_branch.clone())
+                .then(just(Token::Else).ignore_then(then_branch).or_not())
+                .map_with(|((c, t), e_opt), info| Expr {
+                    kind: ExprKind::If(Box::new(c), Box::new(t), e_opt.map(Box::new)),
+                    span: info.span(),
+                })
         };
 
-        let mut with_traits = Vec::new();
-        while self.eat(&Token::With) {
-            if let Some(id) = self.expect_ident("trait name") {
-                with_traits.push(id);
+        // new ModName
+        let new_expr = just(Token::New)
+            .ignore_then(ident())
+            .map_with(|name, e| Expr {
+                kind: ExprKind::New(name),
+                span: e.span(),
+            });
+
+        // primary
+        let primary = choice((
+            int_lit,
+            str_lit,
+            true_lit,
+            false_lit,
+            if_expr,
+            new_expr,
+            paren_or_tuple,
+            block_expr,
+            path_expr,
+        ))
+        .boxed();
+
+        // pratt 演算子定義（高い数値ほど強く結合する）
+        // postfix 12: `(args)` 関数呼び出し，`.ident` フィールド
+        let call_args = expr
+            .clone()
+            .separated_by(just(Token::Comma))
+            .allow_trailing()
+            .collect::<Vec<_>>()
+            .delimited_by(just(Token::LParen), just(Token::RParen));
+
+        let dot_ident = just(Token::Dot).ignore_then(ident());
+
+        let pratt_expr = primary
+            .pratt((
+                postfix(
+                    12,
+                    call_args,
+                    |lhs: Expr, args, e: &mut chumsky::input::MapExtra<'_, '_, _, _>| {
+                        let span: Span = e.span();
+                        Expr {
+                            kind: ExprKind::Call(Box::new(lhs), args),
+                            span,
+                        }
+                    },
+                ),
+                postfix(
+                    12,
+                    dot_ident,
+                    |lhs: Expr, name: Ident, e: &mut chumsky::input::MapExtra<'_, '_, _, _>| {
+                        let span: Span = e.span();
+                        Expr {
+                            kind: ExprKind::Field(Box::new(lhs), name),
+                            span,
+                        }
+                    },
+                ),
+                prefix(
+                    11,
+                    just(Token::Tilde),
+                    |_, rhs: Expr, e: &mut chumsky::input::MapExtra<'_, '_, _, _>| Expr {
+                        kind: ExprKind::Unary(UnaryOp::BitNot, Box::new(rhs)),
+                        span: e.span(),
+                    },
+                ),
+                prefix(
+                    11,
+                    just(Token::Bang),
+                    |_, rhs: Expr, e: &mut chumsky::input::MapExtra<'_, '_, _, _>| Expr {
+                        kind: ExprKind::Unary(UnaryOp::LogNot, Box::new(rhs)),
+                        span: e.span(),
+                    },
+                ),
+                prefix(
+                    11,
+                    just(Token::Minus),
+                    |_, rhs: Expr, e: &mut chumsky::input::MapExtra<'_, '_, _, _>| Expr {
+                        kind: ExprKind::Unary(UnaryOp::Neg, Box::new(rhs)),
+                        span: e.span(),
+                    },
+                ),
+                prefix(
+                    11,
+                    just(Token::Pipe),
+                    |_, rhs: Expr, e: &mut chumsky::input::MapExtra<'_, '_, _, _>| Expr {
+                        kind: ExprKind::Unary(UnaryOp::RedOr, Box::new(rhs)),
+                        span: e.span(),
+                    },
+                ),
+                infix(
+                    left(10),
+                    just(Token::Hash),
+                    |l: Expr, _, r: Expr, e: &mut chumsky::input::MapExtra<'_, '_, _, _>| {
+                        mk_bin(BinaryOp::SignExt, l, r, e.span())
+                    },
+                ),
+                infix(
+                    left(9),
+                    just(Token::Star),
+                    |l, _, r, e: &mut chumsky::input::MapExtra<'_, '_, _, _>| {
+                        mk_bin(BinaryOp::Mul, l, r, e.span())
+                    },
+                ),
+                infix(
+                    left(8),
+                    just(Token::Plus),
+                    |l, _, r, e: &mut chumsky::input::MapExtra<'_, '_, _, _>| {
+                        mk_bin(BinaryOp::Add, l, r, e.span())
+                    },
+                ),
+                infix(
+                    left(8),
+                    just(Token::Minus),
+                    |l, _, r, e: &mut chumsky::input::MapExtra<'_, '_, _, _>| {
+                        mk_bin(BinaryOp::Sub, l, r, e.span())
+                    },
+                ),
+                infix(
+                    left(7),
+                    just(Token::PlusPlus),
+                    |l, _, r, e: &mut chumsky::input::MapExtra<'_, '_, _, _>| {
+                        mk_bin(BinaryOp::Concat, l, r, e.span())
+                    },
+                ),
+                infix(
+                    left(6),
+                    just(Token::Shl),
+                    |l, _, r, e: &mut chumsky::input::MapExtra<'_, '_, _, _>| {
+                        mk_bin(BinaryOp::Shl, l, r, e.span())
+                    },
+                ),
+                infix(
+                    left(6),
+                    just(Token::Shr),
+                    |l, _, r, e: &mut chumsky::input::MapExtra<'_, '_, _, _>| {
+                        mk_bin(BinaryOp::Shr, l, r, e.span())
+                    },
+                ),
+                infix(
+                    left(6),
+                    just(Token::ShrLogical),
+                    |l, _, r, e: &mut chumsky::input::MapExtra<'_, '_, _, _>| {
+                        mk_bin(BinaryOp::ShrLogical, l, r, e.span())
+                    },
+                ),
+                infix(
+                    left(5),
+                    just(Token::Amp),
+                    |l, _, r, e: &mut chumsky::input::MapExtra<'_, '_, _, _>| {
+                        mk_bin(BinaryOp::BitAnd, l, r, e.span())
+                    },
+                ),
+                infix(
+                    left(4),
+                    just(Token::Pipe),
+                    |l, _, r, e: &mut chumsky::input::MapExtra<'_, '_, _, _>| {
+                        mk_bin(BinaryOp::BitOr, l, r, e.span())
+                    },
+                ),
+                infix(
+                    left(4),
+                    just(Token::Caret),
+                    |l, _, r, e: &mut chumsky::input::MapExtra<'_, '_, _, _>| {
+                        mk_bin(BinaryOp::BitXor, l, r, e.span())
+                    },
+                ),
+                infix(
+                    left(3),
+                    just(Token::EqEq),
+                    |l, _, r, e: &mut chumsky::input::MapExtra<'_, '_, _, _>| {
+                        mk_bin(BinaryOp::Eq, l, r, e.span())
+                    },
+                ),
+                infix(
+                    left(3),
+                    just(Token::NotEq),
+                    |l, _, r, e: &mut chumsky::input::MapExtra<'_, '_, _, _>| {
+                        mk_bin(BinaryOp::Ne, l, r, e.span())
+                    },
+                ),
+                infix(
+                    left(3),
+                    just(Token::Lt),
+                    |l, _, r, e: &mut chumsky::input::MapExtra<'_, '_, _, _>| {
+                        mk_bin(BinaryOp::Lt, l, r, e.span())
+                    },
+                ),
+                infix(
+                    left(3),
+                    just(Token::Le),
+                    |l, _, r, e: &mut chumsky::input::MapExtra<'_, '_, _, _>| {
+                        mk_bin(BinaryOp::Le, l, r, e.span())
+                    },
+                ),
+                infix(
+                    left(3),
+                    just(Token::Gt),
+                    |l, _, r, e: &mut chumsky::input::MapExtra<'_, '_, _, _>| {
+                        mk_bin(BinaryOp::Gt, l, r, e.span())
+                    },
+                ),
+                infix(
+                    left(3),
+                    just(Token::Ge),
+                    |l, _, r, e: &mut chumsky::input::MapExtra<'_, '_, _, _>| {
+                        mk_bin(BinaryOp::Ge, l, r, e.span())
+                    },
+                ),
+                infix(
+                    left(2),
+                    just(Token::AmpAmp),
+                    |l, _, r, e: &mut chumsky::input::MapExtra<'_, '_, _, _>| {
+                        mk_bin(BinaryOp::LogAnd, l, r, e.span())
+                    },
+                ),
+                infix(
+                    left(1),
+                    just(Token::PipePipe),
+                    |l, _, r, e: &mut chumsky::input::MapExtra<'_, '_, _, _>| {
+                        mk_bin(BinaryOp::LogOr, l, r, e.span())
+                    },
+                ),
+            ))
+            .boxed();
+
+        // match 後置 (`expr match { case ... }`)
+        let match_arm = just(Token::Case)
+            .ignore_then(pattern.clone())
+            .then_ignore(just(Token::FatArrow))
+            .then(then_or_else_branch(
+                stmt.clone(),
+                expr.clone(),
+                block.clone(),
+            ))
+            .map_with(|(p, body), e| MatchArm {
+                pattern: p,
+                body,
+                span: e.span(),
+            });
+
+        let match_arms = just(Token::Semicolon)
+            .repeated()
+            .ignore_then(match_arm)
+            .separated_by(just(Token::Semicolon).repeated())
+            .allow_trailing()
+            .collect::<Vec<_>>()
+            .delimited_by(just(Token::LBrace), just(Token::RBrace));
+
+        let with_match = pratt_expr
+            .foldl_with(
+                just(Token::Match).ignore_then(match_arms).repeated(),
+                |lhs: Expr, arms: Vec<MatchArm>, info| {
+                    let span: Span = info.span();
+                    Expr {
+                        kind: ExprKind::Match(Box::new(lhs), arms),
+                        span,
+                    }
+                },
+            )
+            .boxed();
+
+        expr.define(with_match);
+    }
+
+    // ---- ブロック ----
+    {
+        let body = just(Token::Semicolon)
+            .repeated()
+            .ignore_then(stmt.clone())
+            .separated_by(just(Token::Semicolon).repeated())
+            .allow_trailing()
+            .collect::<Vec<_>>();
+
+        let blk = body
+            .delimited_by(just(Token::LBrace), just(Token::RBrace))
+            .map_with(|stmts, e| Block {
+                stmts,
+                span: e.span(),
+            });
+        block.define(blk);
+    }
+
+    // ---- val 共通 ----
+    let val_pattern = {
+        let single = ident().map(ValPattern::Single);
+        let tuple = ident()
+            .separated_by(just(Token::Comma))
+            .allow_trailing()
+            .collect::<Vec<_>>()
+            .delimited_by(just(Token::LParen), just(Token::RParen))
+            .map(ValPattern::Tuple);
+        choice((tuple, single))
+    };
+
+    // ---- 文 ----
+    {
+        let val_stmt = just(Token::Val)
+            .ignore_then(val_pattern.clone())
+            .then(just(Token::Colon).ignore_then(ty.clone()).or_not())
+            .then_ignore(just(Token::Eq))
+            .then(expr.clone())
+            .map_with(|((pattern, ty), init), e| ValDecl {
+                pattern,
+                ty,
+                init,
+                span: e.span(),
+            });
+
+        let val_stmt_wrap = val_stmt.clone().map_with(|v, e| Stmt {
+            kind: StmtKind::Val(v),
+            span: e.span(),
+        });
+
+        let block_kind_stmt = choice((
+            just(Token::Par).to(BlockKind::Par),
+            just(Token::Seq).to(BlockKind::Seq),
+            just(Token::Any).to(BlockKind::Any),
+            just(Token::Alt).to(BlockKind::Alt),
+        ))
+        .then(block.clone())
+        .map_with(|(k, b), e| Stmt {
+            kind: StmtKind::BlockKind(k, b),
+            span: e.span(),
+        });
+
+        let arg_list = expr
+            .clone()
+            .separated_by(just(Token::Comma))
+            .allow_trailing()
+            .collect::<Vec<_>>()
+            .delimited_by(just(Token::LParen), just(Token::RParen));
+
+        let generate_stmt = just(Token::Generate)
+            .ignore_then(ident())
+            .then(arg_list.clone())
+            .map_with(|(target, args), e| Stmt {
+                kind: StmtKind::Generate(target, args),
+                span: e.span(),
+            });
+
+        let relay_stmt = just(Token::Relay)
+            .ignore_then(ident())
+            .then(arg_list)
+            .map_with(|(target, args), e| Stmt {
+                kind: StmtKind::Relay(target, args),
+                span: e.span(),
+            });
+
+        let finish_stmt = just(Token::Finish).map_with(|_, e| Stmt {
+            kind: StmtKind::Finish,
+            span: e.span(),
+        });
+
+        let goto_stmt = just(Token::Goto)
+            .ignore_then(ident())
+            .map_with(|target, e| Stmt {
+                kind: StmtKind::Goto(target),
+                span: e.span(),
+            });
+
+        // 式または代入
+        let assign_or_expr = expr
+            .clone()
+            .then(
+                choice((
+                    just(Token::ColonEq)
+                        .ignore_then(expr.clone())
+                        .map(|r| (true, r)),
+                    just(Token::Eq)
+                        .ignore_then(expr.clone())
+                        .map(|r| (false, r)),
+                ))
+                .or_not(),
+            )
+            .map_with(|(lhs, opt), e| {
+                let span: Span = e.span();
+                let kind = match opt {
+                    Some((true, rhs)) => StmtKind::RegAssign(lhs, rhs),
+                    Some((false, rhs)) => StmtKind::Assign(lhs, rhs),
+                    None => StmtKind::Expr(lhs),
+                };
+                Stmt { kind, span }
+            });
+
+        let s = choice((
+            val_stmt_wrap,
+            block_kind_stmt,
+            generate_stmt,
+            relay_stmt,
+            finish_stmt,
+            goto_stmt,
+            assign_or_expr,
+        ))
+        .boxed();
+
+        stmt.define(s);
+    }
+
+    // ---- 各種モジュールアイテム ----
+    let val_stmt_def = just(Token::Val)
+        .ignore_then(val_pattern.clone())
+        .then(just(Token::Colon).ignore_then(ty.clone()).or_not())
+        .then_ignore(just(Token::Eq))
+        .then(expr.clone())
+        .map_with(|((pattern, ty), init), e| ValDecl {
+            pattern,
+            ty,
+            init,
+            span: e.span(),
+        });
+
+    let reg_decl = just(Token::Reg)
+        .ignore_then(ident())
+        .then_ignore(just(Token::Colon))
+        .then(ty.clone())
+        .then(just(Token::Eq).ignore_then(expr.clone()).or_not())
+        .map_with(|((name, ty), init), e| RegDecl {
+            name,
+            ty,
+            init,
+            span: e.span(),
+        });
+
+    let mem_decl = just(Token::Mem)
+        .ignore_then(
+            ty.clone()
+                .delimited_by(just(Token::LBracket), just(Token::RBracket)),
+        )
+        .then(ident())
+        .then(
+            expr.clone()
+                .delimited_by(just(Token::LParen), just(Token::RParen)),
+        )
+        .then(
+            just(Token::Eq)
+                .ignore_then(
+                    expr.clone()
+                        .separated_by(just(Token::Comma))
+                        .allow_trailing()
+                        .collect::<Vec<_>>()
+                        .delimited_by(just(Token::LParen), just(Token::RParen)),
+                )
+                .or_not(),
+        )
+        .map_with(|(((elem_ty, name), size), init_opt), e| MemDecl {
+            name,
+            elem_ty,
+            size,
+            init: init_opt.unwrap_or_default(),
+            span: e.span(),
+        });
+
+    let input_decl = just(Token::Input)
+        .ignore_then(ident())
+        .then_ignore(just(Token::Colon))
+        .then(ty.clone())
+        .map_with(|(name, ty), e| PortDecl {
+            name,
+            ty,
+            span: e.span(),
+        });
+
+    // output port / output def
+    let output_item = just(Token::Output).ignore_then(choice((
+        // `output def name(params): T`
+        just(Token::Def)
+            .ignore_then(ident())
+            .then(params.clone())
+            .then_ignore(just(Token::Colon))
+            .then(ty.clone())
+            .map_with(|((name, params), ret), e| {
+                ModuleItem::OutputFn(OutputFnDecl {
+                    name,
+                    params,
+                    ret,
+                    span: e.span(),
+                })
+            }),
+        // `output name: T`
+        ident()
+            .then_ignore(just(Token::Colon))
+            .then(ty.clone())
+            .map_with(|(name, ty), e| {
+                ModuleItem::Output(PortDecl {
+                    name,
+                    ty,
+                    span: e.span(),
+                })
+            }),
+    )));
+
+    let fn_def = {
+        // `[private] def [recv.]name(params)[: T] (= body | seq block | par block)`
+        let body = choice((
+            just(Token::Eq)
+                .ignore_then(choice((
+                    block.clone(),
+                    expr.clone().map(|e: Expr| {
+                        let span = e.span.clone();
+                        Block {
+                            stmts: vec![Stmt {
+                                kind: StmtKind::Expr(e),
+                                span: span.clone(),
+                            }],
+                            span,
+                        }
+                    }),
+                )))
+                .map(|b| (FnBodyKind::Expr, b)),
+            just(Token::Seq)
+                .ignore_then(block.clone())
+                .map(|b| (FnBodyKind::Seq, b)),
+            just(Token::Par)
+                .ignore_then(block.clone())
+                .map(|b| (FnBodyKind::Par, b)),
+        ));
+
+        just(Token::Private)
+            .or_not()
+            .then_ignore(just(Token::Def))
+            .then(ident())
+            .then(just(Token::Dot).ignore_then(ident()).or_not())
+            .then(params.clone())
+            .then(just(Token::Colon).ignore_then(ty.clone()).or_not())
+            .then(body)
+            .map_with(
+                |(((((priv_kw, first), recv_opt), params), ret), (body_kind, body)), e| {
+                    let (receiver, name) = if let Some(real) = recv_opt {
+                        (Some(first), real)
+                    } else {
+                        (None, first)
+                    };
+                    FnDef {
+                        is_private: priv_kw.is_some(),
+                        receiver,
+                        name,
+                        params,
+                        ret,
+                        body_kind,
+                        body,
+                        span: e.span(),
+                    }
+                },
+            )
+    };
+
+    let always_block = just(Token::Always)
+        .ignore_then(block.clone())
+        .map_with(|b, e| {
+            let mut b = b;
+            b.span = e.span();
+            ModuleItem::Always(b)
+        });
+    let initial_block = just(Token::Initial)
+        .ignore_then(block.clone())
+        .map_with(|b, e| {
+            let mut b = b;
+            b.span = e.span();
+            ModuleItem::Initial(b)
+        });
+
+    // stage 定義
+    let state_def = just(Token::State)
+        .ignore_then(ident())
+        .then(stmt.clone())
+        .map_with(|(name, body), e| StateDef {
+            name,
+            body,
+            span: e.span(),
+        });
+
+    let stage_item = choice((
+        state_def.map(StageItem::State),
+        reg_decl.clone().map(StageItem::Reg),
+        mem_decl.clone().map(StageItem::Mem),
+        val_stmt_def.clone().map(StageItem::Val),
+        stmt.clone().map(StageItem::Stmt),
+    ));
+
+    let stage_body = just(Token::Semicolon)
+        .repeated()
+        .ignore_then(stage_item)
+        .separated_by(just(Token::Semicolon).repeated())
+        .allow_trailing()
+        .collect::<Vec<_>>();
+
+    let stage_def = just(Token::Stage)
+        .ignore_then(ident())
+        .then(params.clone())
+        .then(stage_body.delimited_by(just(Token::LBrace), just(Token::RBrace)))
+        .map_with(|((name, params), body), e| StageDef {
+            name,
+            params,
+            body,
+            span: e.span(),
+        });
+
+    let type_field = ident()
+        .then_ignore(just(Token::Colon))
+        .then(ty.clone())
+        .map(|(name, ty)| TypeField { name, ty });
+
+    let type_def = just(Token::Type)
+        .ignore_then(ident())
+        .then(
+            type_field
+                .separated_by(just(Token::Comma))
+                .allow_trailing()
+                .collect::<Vec<_>>()
+                .delimited_by(just(Token::LParen), just(Token::RParen)),
+        )
+        .map_with(|(name, fields), e| TypeDef {
+            name,
+            fields,
+            span: e.span(),
+        });
+
+    // val または new によるインスタンス
+    let val_or_instance = just(Token::Val)
+        .ignore_then(val_pattern.clone())
+        .then(just(Token::Colon).ignore_then(ty.clone()).or_not())
+        .then_ignore(just(Token::Eq))
+        .then(choice((
+            // `new ModName` を即値とするケース
+            just(Token::New)
+                .ignore_then(ident())
+                .map(|name| Either2::Instance(name)),
+            expr.clone().map(Either2::Expr),
+        )))
+        .map_with(|((pattern, ty), rhs), e| {
+            let span: Span = e.span();
+            match (&pattern, rhs) {
+                (ValPattern::Single(name), Either2::Instance(module_name)) => {
+                    ModuleItem::Instance(InstanceDecl {
+                        name: name.clone(),
+                        module_name,
+                        span,
+                    })
+                }
+                (_, Either2::Instance(module_name)) => {
+                    // tuple パターンに対する new は構文外として ValDecl に格上げ
+                    ModuleItem::Val(ValDecl {
+                        pattern,
+                        ty,
+                        init: Expr {
+                            kind: ExprKind::New(module_name.clone()),
+                            span: module_name.span.clone(),
+                        },
+                        span,
+                    })
+                }
+                (_, Either2::Expr(init)) => ModuleItem::Val(ValDecl {
+                    pattern,
+                    ty,
+                    init,
+                    span,
+                }),
             }
-        }
+        });
 
-        self.expect(&Token::LBrace, "`{`")?;
-        let items = self.parse_module_items_until_brace();
-        let end = self.current_span().end;
-        self.expect(&Token::RBrace, "`}`");
+    let module_item = choice((
+        reg_decl.map(ModuleItem::Reg),
+        mem_decl.map(ModuleItem::Mem),
+        input_decl.map(ModuleItem::Input),
+        output_item,
+        always_block,
+        initial_block,
+        stage_def.map(ModuleItem::Stage),
+        type_def.map(ModuleItem::Type),
+        val_or_instance,
+        fn_def.map(ModuleItem::Fn),
+    ))
+    .boxed();
 
-        Some(ModuleDef {
+    let module_items = just(Token::Semicolon)
+        .repeated()
+        .ignore_then(module_item)
+        .separated_by(just(Token::Semicolon).repeated())
+        .allow_trailing()
+        .collect::<Vec<_>>();
+
+    // ---- module / trait ----
+    let module_def = just(Token::Module)
+        .ignore_then(ident())
+        .then(just(Token::Extends).ignore_then(ident()).or_not())
+        .then(
+            just(Token::With)
+                .ignore_then(ident())
+                .repeated()
+                .collect::<Vec<_>>(),
+        )
+        .then(
+            module_items
+                .clone()
+                .delimited_by(just(Token::LBrace), just(Token::RBrace)),
+        )
+        .map_with(|(((name, extends), with_traits), items), e| ModuleDef {
             name,
             extends,
             with_traits,
             items,
-            span: start..end,
-        })
-    }
+            span: e.span(),
+        });
 
-    fn parse_trait(&mut self) -> Option<TraitDef> {
-        let start = self.current_span().start;
-        self.expect(&Token::Trait, "`trait`")?;
-        let name = self.expect_ident("trait name")?;
-        self.expect(&Token::LBrace, "`{`")?;
-        let items = self.parse_module_items_until_brace();
-        let end = self.current_span().end;
-        self.expect(&Token::RBrace, "`}`");
-        Some(TraitDef {
+    let trait_def = just(Token::Trait)
+        .ignore_then(ident())
+        .then(
+            module_items
+                .clone()
+                .delimited_by(just(Token::LBrace), just(Token::RBrace)),
+        )
+        .map_with(|(name, items), e| TraitDef {
             name,
             items,
-            span: start..end,
-        })
-    }
-
-    fn parse_module_items_until_brace(&mut self) -> Vec<ModuleItem> {
-        let mut items = Vec::new();
-        while !self.at_end() && !self.check(&Token::RBrace) {
-            if self.eat(&Token::Semicolon) {
-                continue;
-            }
-            let start_pos = self.pos;
-            match self.parse_module_item() {
-                Some(item) => items.push(item),
-                None => {
-                    // 進行を保証．自己同期．
-                    if self.pos == start_pos {
-                        self.advance();
-                    }
-                    self.synchronize_in_block();
-                }
-            }
-        }
-        items
-    }
-
-    fn parse_module_item(&mut self) -> Option<ModuleItem> {
-        match self.peek()? {
-            Token::Reg => self.parse_reg_decl().map(ModuleItem::Reg),
-            Token::Mem => self.parse_mem_decl().map(ModuleItem::Mem),
-            Token::Input => self
-                .parse_port_decl(true)
-                .map(|p| ModuleItem::Input(p)),
-            Token::Output => self.parse_output_item(),
-            Token::Private | Token::Def => self.parse_fn_def().map(ModuleItem::Fn),
-            Token::Always => {
-                let start = self.current_span().start;
-                self.advance();
-                let body = self.parse_block()?;
-                Some(ModuleItem::Always(Block {
-                    span: start..body.span.end,
-                    ..body
-                }))
-            }
-            Token::Initial => {
-                let start = self.current_span().start;
-                self.advance();
-                let body = self.parse_block()?;
-                Some(ModuleItem::Initial(Block {
-                    span: start..body.span.end,
-                    ..body
-                }))
-            }
-            Token::Stage => self.parse_stage_def().map(ModuleItem::Stage),
-            Token::Type => self.parse_type_def().map(ModuleItem::Type),
-            Token::Val => self.parse_val_or_instance(),
-            t => {
-                let span = self.current_span();
-                self.errors.push(ParseError {
-                    message: format!("expected module item, got {:?}", t),
-                    span: span.clone(),
-                });
-                Some(ModuleItem::Error(span))
-            }
-        }
-    }
-
-    fn parse_reg_decl(&mut self) -> Option<RegDecl> {
-        let start = self.current_span().start;
-        self.expect(&Token::Reg, "`reg`")?;
-        let name = self.expect_ident("register name")?;
-        self.expect(&Token::Colon, "`:`")?;
-        let ty = self.parse_type()?;
-        let init = if self.eat(&Token::Eq) {
-            self.parse_expr()
-        } else {
-            None
-        };
-        let end = self.previous_span().end;
-        Some(RegDecl {
-            name,
-            ty,
-            init,
-            span: start..end,
-        })
-    }
-
-    fn parse_mem_decl(&mut self) -> Option<MemDecl> {
-        // mem [<Type>] <name>(<size>) [= (e, e, ...)]
-        let start = self.current_span().start;
-        self.expect(&Token::Mem, "`mem`")?;
-        self.expect(&Token::LBracket, "`[`")?;
-        let elem_ty = self.parse_type()?;
-        self.expect(&Token::RBracket, "`]`")?;
-        let name = self.expect_ident("memory name")?;
-        self.expect(&Token::LParen, "`(`")?;
-        let size = self.parse_expr()?;
-        self.expect(&Token::RParen, "`)`")?;
-        let init = if self.eat(&Token::Eq) {
-            self.expect(&Token::LParen, "`(`")?;
-            let mut elements = Vec::new();
-            if !self.check(&Token::RParen) {
-                loop {
-                    if let Some(e) = self.parse_expr() {
-                        elements.push(e);
-                    } else {
-                        break;
-                    }
-                    if !self.eat(&Token::Comma) {
-                        break;
-                    }
-                }
-            }
-            self.expect(&Token::RParen, "`)`");
-            elements
-        } else {
-            Vec::new()
-        };
-        let end = self.previous_span().end;
-        Some(MemDecl {
-            name,
-            elem_ty,
-            size,
-            init,
-            span: start..end,
-        })
-    }
-
-    fn parse_port_decl(&mut self, is_input: bool) -> Option<PortDecl> {
-        let start = self.current_span().start;
-        if is_input {
-            self.expect(&Token::Input, "`input`")?;
-        } else {
-            // 既に `output` を消費済みの呼び出し元がある場合があるため
-            // 呼び出し元のロジックで使い分ける．ここでは出力ポート用の入口.
-            self.expect(&Token::Output, "`output`")?;
-        }
-        let name = self.expect_ident("port name")?;
-        self.expect(&Token::Colon, "`:`")?;
-        let ty = self.parse_type()?;
-        let end = self.previous_span().end;
-        Some(PortDecl {
-            name,
-            ty,
-            span: start..end,
-        })
-    }
-
-    /// `output ...` のディスパッチ．`output def ...` か `output <name>: <Type>` を判別する．
-    fn parse_output_item(&mut self) -> Option<ModuleItem> {
-        let start = self.current_span().start;
-        self.expect(&Token::Output, "`output`")?;
-        if self.check(&Token::Def) {
-            self.advance(); // def
-            // optional 受信者は output def では使われないとみなす
-            let name = self.expect_ident("function name")?;
-            let params = self.parse_params()?;
-            self.expect(&Token::Colon, "`:`")?;
-            let ret = self.parse_type()?;
-            let end = self.previous_span().end;
-            Some(ModuleItem::OutputFn(OutputFnDecl {
-                name,
-                params,
-                ret,
-                span: start..end,
-            }))
-        } else {
-            let name = self.expect_ident("port name")?;
-            self.expect(&Token::Colon, "`:`")?;
-            let ty = self.parse_type()?;
-            let end = self.previous_span().end;
-            Some(ModuleItem::Output(PortDecl {
-                name,
-                ty,
-                span: start..end,
-            }))
-        }
-    }
-
-    fn parse_fn_def(&mut self) -> Option<FnDef> {
-        let start = self.current_span().start;
-        let is_private = self.eat(&Token::Private);
-        self.expect(&Token::Def, "`def`")?;
-        // 受信者付きの定義 `def cpu.mem_read(...)` をサポート
-        let first = self.expect_ident("function name")?;
-        let (receiver, name) = if self.eat(&Token::Dot) {
-            let real = self.expect_ident("method name")?;
-            (Some(first), real)
-        } else {
-            (None, first)
-        };
-        let params = self.parse_params()?;
-        let ret = if self.eat(&Token::Colon) {
-            Some(self.parse_type()?)
-        } else {
-            None
-        };
-
-        // body kind 判定:
-        //   `=` の後にブロックまたは式  -> Expr
-        //   `seq { ... }`                -> Seq
-        //   `par { ... }`                -> Par
-        let (body_kind, body) = if self.eat(&Token::Eq) {
-            let body = self.parse_block_or_expr_block()?;
-            (FnBodyKind::Expr, body)
-        } else if self.eat(&Token::Seq) {
-            let body = self.parse_block()?;
-            (FnBodyKind::Seq, body)
-        } else if self.eat(&Token::Par) {
-            let body = self.parse_block()?;
-            (FnBodyKind::Par, body)
-        } else {
-            // 本体省略は認めない
-            let span = self.current_span();
-            self.errors.push(ParseError {
-                message: "expected function body (`= ...`, `seq { ... }`, or `par { ... }`)"
-                    .to_string(),
-                span,
-            });
-            return None;
-        };
-
-        let end = self.previous_span().end;
-        Some(FnDef {
-            is_private,
-            receiver,
-            name,
-            params,
-            ret,
-            body_kind,
-            body,
-            span: start..end,
-        })
-    }
-
-    /// `def f(...) = expr` における式形式．波括弧なしの式も受け入れる．
-    fn parse_block_or_expr_block(&mut self) -> Option<Block> {
-        if self.check(&Token::LBrace) {
-            self.parse_block()
-        } else {
-            // 単一式を1要素のブロックに包む
-            let expr = self.parse_expr()?;
-            let span = expr.span.clone();
-            Some(Block {
-                stmts: vec![Stmt {
-                    kind: StmtKind::Expr(expr),
-                    span: span.clone(),
-                }],
-                span,
-            })
-        }
-    }
-
-    fn parse_params(&mut self) -> Option<Vec<Param>> {
-        self.expect(&Token::LParen, "`(`")?;
-        let mut params = Vec::new();
-        if !self.check(&Token::RParen) {
-            loop {
-                if let Some(name) = self.expect_ident("parameter name") {
-                    let ty = if self.eat(&Token::Colon) {
-                        self.parse_type()
-                    } else {
-                        None
-                    };
-                    params.push(Param { name, ty });
-                }
-                if !self.eat(&Token::Comma) {
-                    break;
-                }
-            }
-        }
-        self.expect(&Token::RParen, "`)`")?;
-        Some(params)
-    }
-
-    fn parse_stage_def(&mut self) -> Option<StageDef> {
-        let start = self.current_span().start;
-        self.expect(&Token::Stage, "`stage`")?;
-        let name = self.expect_ident("stage name")?;
-        let params = self.parse_params()?;
-        self.expect(&Token::LBrace, "`{`")?;
-        let mut body = Vec::new();
-        while !self.at_end() && !self.check(&Token::RBrace) {
-            if self.eat(&Token::Semicolon) {
-                continue;
-            }
-            let pos_before = self.pos;
-            let item = match self.peek() {
-                Some(Token::State) => self.parse_state_def().map(StageItem::State),
-                Some(Token::Reg) => self.parse_reg_decl().map(StageItem::Reg),
-                Some(Token::Mem) => self.parse_mem_decl().map(StageItem::Mem),
-                Some(Token::Val) => self.parse_val_stmt().map(StageItem::Val),
-                _ => self.parse_stmt().map(StageItem::Stmt),
-            };
-            match item {
-                Some(it) => body.push(it),
-                None => {
-                    if self.pos == pos_before {
-                        self.advance();
-                    }
-                    self.synchronize_in_block();
-                }
-            }
-        }
-        let end = self.current_span().end;
-        self.expect(&Token::RBrace, "`}`");
-        Some(StageDef {
-            name,
-            params,
-            body,
-            span: start..end,
-        })
-    }
-
-    fn parse_state_def(&mut self) -> Option<StateDef> {
-        let start = self.current_span().start;
-        self.expect(&Token::State, "`state`")?;
-        let name = self.expect_ident("state name")?;
-        let body = self.parse_stmt()?;
-        let end = body.span.end;
-        Some(StateDef {
-            name,
-            body,
-            span: start..end,
-        })
-    }
-
-    fn parse_type_def(&mut self) -> Option<TypeDef> {
-        let start = self.current_span().start;
-        self.expect(&Token::Type, "`type`")?;
-        let name = self.expect_ident("type name")?;
-        self.expect(&Token::LParen, "`(`")?;
-        let mut fields = Vec::new();
-        if !self.check(&Token::RParen) {
-            loop {
-                let fname = self.expect_ident("field name")?;
-                self.expect(&Token::Colon, "`:`")?;
-                let fty = self.parse_type()?;
-                fields.push(TypeField { name: fname, ty: fty });
-                if !self.eat(&Token::Comma) {
-                    break;
-                }
-            }
-        }
-        self.expect(&Token::RParen, "`)`")?;
-        let end = self.previous_span().end;
-        Some(TypeDef {
-            name,
-            fields,
-            span: start..end,
-        })
-    }
-
-    /// `val name = new Mod` か `val ... = expr` か判別する
-    fn parse_val_or_instance(&mut self) -> Option<ModuleItem> {
-        let start = self.current_span().start;
-        self.expect(&Token::Val, "`val`")?;
-
-        // パターン部の解析
-        let pattern = if self.eat(&Token::LParen) {
-            let mut names = Vec::new();
-            if !self.check(&Token::RParen) {
-                loop {
-                    if let Some(n) = self.expect_ident("identifier") {
-                        names.push(n);
-                    }
-                    if !self.eat(&Token::Comma) {
-                        break;
-                    }
-                }
-            }
-            self.expect(&Token::RParen, "`)`")?;
-            ValPattern::Tuple(names)
-        } else {
-            let n = self.expect_ident("identifier")?;
-            ValPattern::Single(n)
-        };
-
-        let ty = if self.eat(&Token::Colon) {
-            Some(self.parse_type()?)
-        } else {
-            None
-        };
-
-        self.expect(&Token::Eq, "`=`")?;
-
-        // `new ModName` 即値はモジュールスコープではインスタンス宣言にする
-        if self.check(&Token::New) {
-            if let ValPattern::Single(name) = pattern {
-                self.advance(); // new
-                let module_name = self.expect_ident("module name")?;
-                let end = self.previous_span().end;
-                return Some(ModuleItem::Instance(InstanceDecl {
-                    name,
-                    module_name,
-                    span: start..end,
-                }));
-            }
-        }
-
-        let init = self.parse_expr()?;
-        let end = init.span.end;
-        Some(ModuleItem::Val(ValDecl {
-            pattern,
-            ty,
-            init,
-            span: start..end,
-        }))
-    }
-
-    // ----- 型 -----
-
-    fn parse_type(&mut self) -> Option<Type> {
-        let start = self.current_span().start;
-        let kind = match self.peek()? {
-            Token::Ident(name) => {
-                let name = name.clone();
-                let kind_span = self.current_span();
-                match name.as_str() {
-                    "Unit" => {
-                        self.advance();
-                        TypeKind::Unit
-                    }
-                    "Boolean" => {
-                        self.advance();
-                        TypeKind::Boolean
-                    }
-                    "Int" => {
-                        self.advance();
-                        TypeKind::Int
-                    }
-                    "String" => {
-                        self.advance();
-                        TypeKind::String
-                    }
-                    "Bit" => {
-                        self.advance();
-                        self.expect(&Token::LParen, "`(`")?;
-                        let n = self.parse_expr()?;
-                        self.expect(&Token::RParen, "`)`")?;
-                        TypeKind::Bit(Box::new(n))
-                    }
-                    "Array" => {
-                        self.advance();
-                        self.expect(&Token::LBracket, "`[`")?;
-                        let inner = self.parse_type()?;
-                        self.expect(&Token::RBracket, "`]`")?;
-                        TypeKind::Array(Box::new(inner))
-                    }
-                    "List" => {
-                        self.advance();
-                        self.expect(&Token::LBracket, "`[`")?;
-                        let inner = self.parse_type()?;
-                        self.expect(&Token::RBracket, "`]`")?;
-                        TypeKind::List(Box::new(inner))
-                    }
-                    _ => {
-                        self.advance();
-                        TypeKind::Named(Spanned::new(name, kind_span))
-                    }
-                }
-            }
-            Token::LParen => {
-                self.advance();
-                let mut tys = Vec::new();
-                if !self.check(&Token::RParen) {
-                    loop {
-                        let t = self.parse_type()?;
-                        tys.push(t);
-                        if !self.eat(&Token::Comma) {
-                            break;
-                        }
-                    }
-                }
-                self.expect(&Token::RParen, "`)`")?;
-                TypeKind::Tuple(tys)
-            }
-            other => {
-                let span = self.current_span();
-                self.errors.push(ParseError {
-                    message: format!("expected type, got {:?}", other),
-                    span: span.clone(),
-                });
-                self.advance();
-                return Some(Type {
-                    kind: TypeKind::Named(Spanned::new("<error>".into(), span.clone())),
-                    span,
-                });
-            }
-        };
-        let end = self.previous_span().end;
-        Some(Type {
-            kind,
-            span: start..end,
-        })
-    }
-
-    // ----- 文 -----
-
-    fn parse_block(&mut self) -> Option<Block> {
-        let start = self.current_span().start;
-        self.expect(&Token::LBrace, "`{`")?;
-        let mut stmts = Vec::new();
-        while !self.at_end() && !self.check(&Token::RBrace) {
-            if self.eat(&Token::Semicolon) {
-                continue;
-            }
-            let pos_before = self.pos;
-            match self.parse_stmt() {
-                Some(s) => stmts.push(s),
-                None => {
-                    if self.pos == pos_before {
-                        self.advance();
-                    }
-                    self.synchronize_in_block();
-                }
-            }
-        }
-        let end = self.current_span().end;
-        self.expect(&Token::RBrace, "`}`");
-        Some(Block {
-            stmts,
-            span: start..end,
-        })
-    }
-
-    fn parse_stmt(&mut self) -> Option<Stmt> {
-        let start = self.current_span().start;
-        match self.peek()? {
-            Token::Val => {
-                let item = self.parse_val_stmt()?;
-                let end = item.span.end;
-                Some(Stmt {
-                    kind: StmtKind::Val(item),
-                    span: start..end,
-                })
-            }
-            Token::Par | Token::Seq | Token::Any | Token::Alt => {
-                let kind = match self.peek().unwrap() {
-                    Token::Par => BlockKind::Par,
-                    Token::Seq => BlockKind::Seq,
-                    Token::Any => BlockKind::Any,
-                    Token::Alt => BlockKind::Alt,
-                    _ => unreachable!(),
-                };
-                self.advance();
-                let block = self.parse_block()?;
-                let end = block.span.end;
-                Some(Stmt {
-                    kind: StmtKind::BlockKind(kind, block),
-                    span: start..end,
-                })
-            }
-            Token::Generate => {
-                self.advance();
-                let target = self.expect_ident("stage name")?;
-                self.expect(&Token::LParen, "`(`")?;
-                let args = self.parse_arg_list()?;
-                self.expect(&Token::RParen, "`)`")?;
-                let end = self.previous_span().end;
-                Some(Stmt {
-                    kind: StmtKind::Generate(target, args),
-                    span: start..end,
-                })
-            }
-            Token::Relay => {
-                self.advance();
-                let target = self.expect_ident("stage name")?;
-                self.expect(&Token::LParen, "`(`")?;
-                let args = self.parse_arg_list()?;
-                self.expect(&Token::RParen, "`)`")?;
-                let end = self.previous_span().end;
-                Some(Stmt {
-                    kind: StmtKind::Relay(target, args),
-                    span: start..end,
-                })
-            }
-            Token::Finish => {
-                self.advance();
-                // `finish` は引数を取る場合 (`_finish` ではなく `finish` のみ) と取らない場合がある．
-                // ここではキーワード版は引数なしのみ受理．`_finish(...)` は識別子として扱う．
-                let end = self.previous_span().end;
-                Some(Stmt {
-                    kind: StmtKind::Finish,
-                    span: start..end,
-                })
-            }
-            Token::Goto => {
-                self.advance();
-                let target = self.expect_ident("state name")?;
-                let end = self.previous_span().end;
-                Some(Stmt {
-                    kind: StmtKind::Goto(target),
-                    span: start..end,
-                })
-            }
-            _ => {
-                // 式または代入の文
-                let lhs = self.parse_expr()?;
-                if self.eat(&Token::ColonEq) {
-                    let rhs = self.parse_expr()?;
-                    let end = rhs.span.end;
-                    return Some(Stmt {
-                        kind: StmtKind::RegAssign(lhs, rhs),
-                        span: start..end,
-                    });
-                }
-                if self.eat(&Token::Eq) {
-                    let rhs = self.parse_expr()?;
-                    let end = rhs.span.end;
-                    return Some(Stmt {
-                        kind: StmtKind::Assign(lhs, rhs),
-                        span: start..end,
-                    });
-                }
-                let end = lhs.span.end;
-                Some(Stmt {
-                    kind: StmtKind::Expr(lhs),
-                    span: start..end,
-                })
-            }
-        }
-    }
-
-    fn parse_val_stmt(&mut self) -> Option<ValDecl> {
-        let start = self.current_span().start;
-        self.expect(&Token::Val, "`val`")?;
-        let pattern = if self.eat(&Token::LParen) {
-            let mut names = Vec::new();
-            if !self.check(&Token::RParen) {
-                loop {
-                    if let Some(n) = self.expect_ident("identifier") {
-                        names.push(n);
-                    }
-                    if !self.eat(&Token::Comma) {
-                        break;
-                    }
-                }
-            }
-            self.expect(&Token::RParen, "`)`")?;
-            ValPattern::Tuple(names)
-        } else {
-            let n = self.expect_ident("identifier")?;
-            ValPattern::Single(n)
-        };
-        let ty = if self.eat(&Token::Colon) {
-            Some(self.parse_type()?)
-        } else {
-            None
-        };
-        self.expect(&Token::Eq, "`=`")?;
-        let init = self.parse_expr()?;
-        let end = init.span.end;
-        Some(ValDecl {
-            pattern,
-            ty,
-            init,
-            span: start..end,
-        })
-    }
-
-    fn parse_arg_list(&mut self) -> Option<Vec<Expr>> {
-        let mut args = Vec::new();
-        if !self.check(&Token::RParen) {
-            loop {
-                let e = self.parse_expr()?;
-                args.push(e);
-                if !self.eat(&Token::Comma) {
-                    break;
-                }
-            }
-        }
-        Some(args)
-    }
-
-    // ----- 式（演算子優先順位） -----
-
-    fn parse_expr(&mut self) -> Option<Expr> {
-        let mut expr = self.parse_or()?;
-        // 後置 `match { case ... }` をフォールドする
-        while self.check(&Token::Match) {
-            self.advance();
-            let arms = self.parse_match_arms()?;
-            let start = expr.span.start;
-            let end = self.previous_span().end;
-            expr = Expr {
-                kind: ExprKind::Match(Box::new(expr), arms),
-                span: start..end,
-            };
-        }
-        Some(expr)
-    }
-
-    fn parse_or(&mut self) -> Option<Expr> {
-        let mut lhs = self.parse_and()?;
-        while self.check(&Token::PipePipe) {
-            self.advance();
-            let rhs = self.parse_and()?;
-            lhs = Self::mk_bin(BinaryOp::LogOr, lhs, rhs);
-        }
-        Some(lhs)
-    }
-
-    fn parse_and(&mut self) -> Option<Expr> {
-        let mut lhs = self.parse_cmp()?;
-        while self.check(&Token::AmpAmp) {
-            self.advance();
-            let rhs = self.parse_cmp()?;
-            lhs = Self::mk_bin(BinaryOp::LogAnd, lhs, rhs);
-        }
-        Some(lhs)
-    }
-
-    fn parse_cmp(&mut self) -> Option<Expr> {
-        let mut lhs = self.parse_bitor_xor()?;
-        loop {
-            let op = match self.peek() {
-                Some(Token::EqEq) => BinaryOp::Eq,
-                Some(Token::NotEq) => BinaryOp::Ne,
-                Some(Token::Lt) => BinaryOp::Lt,
-                Some(Token::Le) => BinaryOp::Le,
-                Some(Token::Gt) => BinaryOp::Gt,
-                Some(Token::Ge) => BinaryOp::Ge,
-                _ => break,
-            };
-            self.advance();
-            let rhs = self.parse_bitor_xor()?;
-            lhs = Self::mk_bin(op, lhs, rhs);
-        }
-        Some(lhs)
-    }
-
-    fn parse_bitor_xor(&mut self) -> Option<Expr> {
-        let mut lhs = self.parse_bitand()?;
-        loop {
-            let op = match self.peek() {
-                Some(Token::Pipe) => BinaryOp::BitOr,
-                Some(Token::Caret) => BinaryOp::BitXor,
-                _ => break,
-            };
-            self.advance();
-            let rhs = self.parse_bitand()?;
-            lhs = Self::mk_bin(op, lhs, rhs);
-        }
-        Some(lhs)
-    }
-
-    fn parse_bitand(&mut self) -> Option<Expr> {
-        let mut lhs = self.parse_shift()?;
-        while self.check(&Token::Amp) {
-            self.advance();
-            let rhs = self.parse_shift()?;
-            lhs = Self::mk_bin(BinaryOp::BitAnd, lhs, rhs);
-        }
-        Some(lhs)
-    }
-
-    fn parse_shift(&mut self) -> Option<Expr> {
-        let mut lhs = self.parse_concat()?;
-        loop {
-            let op = match self.peek() {
-                Some(Token::Shl) => BinaryOp::Shl,
-                Some(Token::Shr) => BinaryOp::Shr,
-                Some(Token::ShrLogical) => BinaryOp::ShrLogical,
-                _ => break,
-            };
-            self.advance();
-            let rhs = self.parse_concat()?;
-            lhs = Self::mk_bin(op, lhs, rhs);
-        }
-        Some(lhs)
-    }
-
-    fn parse_concat(&mut self) -> Option<Expr> {
-        let mut lhs = self.parse_addsub()?;
-        while self.check(&Token::PlusPlus) {
-            self.advance();
-            let rhs = self.parse_addsub()?;
-            lhs = Self::mk_bin(BinaryOp::Concat, lhs, rhs);
-        }
-        Some(lhs)
-    }
-
-    fn parse_addsub(&mut self) -> Option<Expr> {
-        let mut lhs = self.parse_mul()?;
-        loop {
-            let op = match self.peek() {
-                Some(Token::Plus) => BinaryOp::Add,
-                Some(Token::Minus) => BinaryOp::Sub,
-                _ => break,
-            };
-            self.advance();
-            let rhs = self.parse_mul()?;
-            lhs = Self::mk_bin(op, lhs, rhs);
-        }
-        Some(lhs)
-    }
-
-    fn parse_mul(&mut self) -> Option<Expr> {
-        let mut lhs = self.parse_signext()?;
-        while self.check(&Token::Star) {
-            self.advance();
-            let rhs = self.parse_signext()?;
-            lhs = Self::mk_bin(BinaryOp::Mul, lhs, rhs);
-        }
-        Some(lhs)
-    }
-
-    fn parse_signext(&mut self) -> Option<Expr> {
-        let mut lhs = self.parse_unary()?;
-        while self.check(&Token::Hash) {
-            self.advance();
-            let rhs = self.parse_unary()?;
-            lhs = Self::mk_bin(BinaryOp::SignExt, lhs, rhs);
-        }
-        Some(lhs)
-    }
-
-    fn parse_unary(&mut self) -> Option<Expr> {
-        let start = self.current_span().start;
-        match self.peek() {
-            Some(Token::Tilde) => {
-                self.advance();
-                let inner = self.parse_unary()?;
-                let end = inner.span.end;
-                Some(Expr {
-                    kind: ExprKind::Unary(UnaryOp::BitNot, Box::new(inner)),
-                    span: start..end,
-                })
-            }
-            Some(Token::Bang) => {
-                self.advance();
-                let inner = self.parse_unary()?;
-                let end = inner.span.end;
-                Some(Expr {
-                    kind: ExprKind::Unary(UnaryOp::LogNot, Box::new(inner)),
-                    span: start..end,
-                })
-            }
-            Some(Token::Minus) => {
-                self.advance();
-                let inner = self.parse_unary()?;
-                let end = inner.span.end;
-                Some(Expr {
-                    kind: ExprKind::Unary(UnaryOp::Neg, Box::new(inner)),
-                    span: start..end,
-                })
-            }
-            // リダクションOR `|x` は括弧内に出現する慣習なのでここでも受ける
-            Some(Token::Pipe) => {
-                self.advance();
-                let inner = self.parse_unary()?;
-                let end = inner.span.end;
-                Some(Expr {
-                    kind: ExprKind::Unary(UnaryOp::RedOr, Box::new(inner)),
-                    span: start..end,
-                })
-            }
-            _ => self.parse_postfix(),
-        }
-    }
-
-    fn parse_postfix(&mut self) -> Option<Expr> {
-        let mut expr = self.parse_primary()?;
-        loop {
-            match self.peek() {
-                Some(Token::Dot) => {
-                    self.advance();
-                    let name = self.expect_ident("field or method name")?;
-                    let span_start = expr.span.start;
-                    let end = name.span.end;
-                    let new_expr = Expr {
-                        kind: ExprKind::Field(Box::new(expr), name),
-                        span: span_start..end,
-                    };
-                    expr = new_expr;
-                }
-                Some(Token::LParen) => {
-                    self.advance();
-                    let args = self.parse_arg_list()?;
-                    let close = self.expect(&Token::RParen, "`)`")?;
-                    let span_start = expr.span.start;
-                    expr = Expr {
-                        kind: ExprKind::Call(Box::new(expr), args),
-                        span: span_start..close.end,
-                    };
-                }
-                _ => break,
-            }
-        }
-        Some(expr)
-    }
-
-    fn parse_primary(&mut self) -> Option<Expr> {
-        let start = self.current_span().start;
-        match self.peek()? {
-            Token::IntLit(_) => {
-                let (tok, span) = self.advance().unwrap();
-                let s = if let Token::IntLit(s) = tok { s } else { unreachable!() };
-                Some(Expr {
-                    kind: ExprKind::Int(s),
-                    span,
-                })
-            }
-            Token::StringLit(_) => {
-                let (tok, span) = self.advance().unwrap();
-                let s = if let Token::StringLit(s) = tok { s } else { unreachable!() };
-                Some(Expr {
-                    kind: ExprKind::Str(s),
-                    span,
-                })
-            }
-            Token::True => {
-                let span = self.current_span();
-                self.advance();
-                Some(Expr {
-                    kind: ExprKind::Bool(true),
-                    span,
-                })
-            }
-            Token::False => {
-                let span = self.current_span();
-                self.advance();
-                Some(Expr {
-                    kind: ExprKind::Bool(false),
-                    span,
-                })
-            }
-            Token::Ident(_) => {
-                let (tok, span) = self.advance().unwrap();
-                let s = if let Token::Ident(s) = tok { s } else { unreachable!() };
-                Some(Expr {
-                    kind: ExprKind::Path(Spanned::new(s, span.clone())),
-                    span,
-                })
-            }
-            Token::LParen => {
-                self.advance();
-                if self.eat(&Token::RParen) {
-                    let end = self.previous_span().end;
-                    return Some(Expr {
-                        kind: ExprKind::Unit,
-                        span: start..end,
-                    });
-                }
-                let first = self.parse_expr()?;
-                if self.eat(&Token::Comma) {
-                    let mut elems = vec![first];
-                    if !self.check(&Token::RParen) {
-                        loop {
-                            let e = self.parse_expr()?;
-                            elems.push(e);
-                            if !self.eat(&Token::Comma) {
-                                break;
-                            }
-                        }
-                    }
-                    self.expect(&Token::RParen, "`)`")?;
-                    let end = self.previous_span().end;
-                    return Some(Expr {
-                        kind: ExprKind::Tuple(elems),
-                        span: start..end,
-                    });
-                }
-                self.expect(&Token::RParen, "`)`")?;
-                Some(first)
-            }
-            Token::LBrace => {
-                let block = self.parse_block()?;
-                let span = block.span.clone();
-                Some(Expr {
-                    kind: ExprKind::Block(block),
-                    span,
-                })
-            }
-            Token::If => self.parse_if(),
-            Token::Match => self.parse_match_kw_alone(),
-            Token::New => {
-                self.advance();
-                let name = self.expect_ident("module name")?;
-                let end = name.span.end;
-                Some(Expr {
-                    kind: ExprKind::New(name),
-                    span: start..end,
-                })
-            }
-            other => {
-                let span = self.current_span();
-                self.errors.push(ParseError {
-                    message: format!("expected expression, got {:?}", other),
-                    span: span.clone(),
-                });
-                self.advance();
-                Some(Expr {
-                    kind: ExprKind::Error,
-                    span,
-                })
-            }
-        }
-    }
-
-    fn parse_if(&mut self) -> Option<Expr> {
-        let start = self.current_span().start;
-        self.expect(&Token::If, "`if`")?;
-        self.expect(&Token::LParen, "`(`")?;
-        let cond = self.parse_expr()?;
-        self.expect(&Token::RParen, "`)`")?;
-        // then 部分は単独式または文ブロック等
-        let then = self.parse_then_branch()?;
-        let else_ = if self.eat(&Token::Else) {
-            Some(Box::new(self.parse_then_branch()?))
-        } else {
-            None
-        };
-        let end = else_
-            .as_ref()
-            .map(|e| e.span.end)
-            .unwrap_or(then.span.end);
-        Some(Expr {
-            kind: ExprKind::If(Box::new(cond), Box::new(then), else_),
-            span: start..end,
-        })
-    }
-
-    /// `if` の分岐部．文相当のキーワード文と式の両方を受ける．
-    fn parse_then_branch(&mut self) -> Option<Expr> {
-        if self.check(&Token::LBrace) {
-            let block = self.parse_block()?;
-            let span = block.span.clone();
-            return Some(Expr {
-                kind: ExprKind::Block(block),
-                span,
-            });
-        }
-        if matches!(
-            self.peek(),
-            Some(Token::Par | Token::Seq | Token::Any | Token::Alt | Token::Generate
-                | Token::Relay | Token::Finish | Token::Goto)
-        ) {
-            // 文相当をブロックに包む
-            let stmt = self.parse_stmt()?;
-            let span = stmt.span.clone();
-            return Some(Expr {
-                kind: ExprKind::Block(Block {
-                    stmts: vec![stmt],
-                    span: span.clone(),
-                }),
-                span,
-            });
-        }
-        self.parse_expr()
-    }
-
-    /// `match` 単独形式（`expr match` ではなく `match expr` 形式の予約）．
-    /// 実際には postfix 連鎖で `expr match { ... }` を扱う必要があるため，
-    /// 後置で受ける別経路をオプションで用意する余地を残す．
-    fn parse_match_kw_alone(&mut self) -> Option<Expr> {
-        let start = self.current_span().start;
-        self.expect(&Token::Match, "`match`")?;
-        // この経路は Reserve．
-        let _ = start;
-        let span = self.previous_span();
-        self.errors.push(ParseError {
-            message: "bare `match` is not supported; use `expr match { ... }`".into(),
-            span: span.clone(),
+            span: e.span(),
         });
-        Some(Expr {
-            kind: ExprKind::Error,
-            span,
-        })
-    }
 
-    /// `expr match { case p => e ... }` の解析
-    /// 注: `match` は postfix 演算子レベルで現れるため，現状の優先順位では
-    /// 構文中に現れるのは限定的．ここでは parse_expr 後の追加処理として呼ぶ．
-    fn parse_match_arms(&mut self) -> Option<Vec<MatchArm>> {
-        self.expect(&Token::LBrace, "`{`")?;
-        let mut arms = Vec::new();
-        while !self.at_end() && !self.check(&Token::RBrace) {
-            if self.eat(&Token::Semicolon) {
-                continue;
-            }
-            let arm_start = self.current_span().start;
-            self.expect(&Token::Case, "`case`")?;
-            let pat = self.parse_pattern()?;
-            self.expect(&Token::FatArrow, "`=>`")?;
-            // ブロック相当（par/seq/any/alt や `{ ... }`）も受け入れる
-            let body = self.parse_then_branch()?;
-            let end = body.span.end;
-            arms.push(MatchArm {
-                pattern: pat,
-                body,
-                span: arm_start..end,
-            });
-        }
-        self.expect(&Token::RBrace, "`}`")?;
-        Some(arms)
-    }
+    let item = choice((module_def.map(Item::Module), trait_def.map(Item::Trait)));
 
-    fn parse_pattern(&mut self) -> Option<Pattern> {
-        match self.peek()? {
-            Token::Ident(s) if s == "_" => {
-                self.advance();
-                Some(Pattern::Wildcard)
-            }
-            Token::Ident(_) => {
-                let (tok, span) = self.advance().unwrap();
-                let s = if let Token::Ident(s) = tok { s } else { unreachable!() };
-                Some(Pattern::Ident(Spanned::new(s, span)))
-            }
-            Token::IntLit(_) => {
-                let (tok, _) = self.advance().unwrap();
-                let s = if let Token::IntLit(s) = tok { s } else { unreachable!() };
-                Some(Pattern::IntLit(s))
-            }
-            other => {
-                let span = self.current_span();
-                self.errors.push(ParseError {
-                    message: format!("expected pattern, got {:?}", other),
-                    span,
-                });
-                self.advance();
-                None
-            }
-        }
-    }
+    let unit = just(Token::Semicolon)
+        .repeated()
+        .ignore_then(item)
+        .separated_by(just(Token::Semicolon).repeated())
+        .allow_trailing()
+        .collect::<Vec<_>>()
+        .map(|items| CompilationUnit { items });
 
-    fn mk_bin(op: BinaryOp, l: Expr, r: Expr) -> Expr {
-        let span = l.span.start..r.span.end;
-        Expr {
-            kind: ExprKind::Binary(op, Box::new(l), Box::new(r)),
-            span,
-        }
+    unit.then_ignore(just(Token::Semicolon).repeated())
+        .then_ignore(end())
+}
+
+// ---- 補助関数 ----
+
+fn mk_bin(op: BinaryOp, l: Expr, r: Expr, span: Span) -> Expr {
+    Expr {
+        kind: ExprKind::Binary(op, Box::new(l), Box::new(r)),
+        span,
     }
 }
 
+enum Either2 {
+    Instance(Ident),
+    Expr(Expr),
+}
+
+/// 分岐部（if-then/else, match-case body）の解析．
+/// ブロック・制御文・式を受ける．
+fn then_or_else_branch<'a>(
+    stmt: Recursive<chumsky::recursive::Indirect<'a, 'a, Toks<'a>, Stmt, Extra<'a>>>,
+    expr: Recursive<chumsky::recursive::Indirect<'a, 'a, Toks<'a>, Expr, Extra<'a>>>,
+    block: Recursive<chumsky::recursive::Indirect<'a, 'a, Toks<'a>, Block, Extra<'a>>>,
+) -> impl Parser<'a, Toks<'a>, Expr, Extra<'a>> + Clone {
+    let block_branch = block.map(|b: Block| {
+        let span = b.span.clone();
+        Expr {
+            kind: ExprKind::Block(b),
+            span,
+        }
+    });
+    let stmt_branch = stmt_like_branch_or_expr(stmt, expr);
+    choice((block_branch, stmt_branch))
+}
+
+fn stmt_like_branch_or_expr<'a>(
+    stmt: Recursive<chumsky::recursive::Indirect<'a, 'a, Toks<'a>, Stmt, Extra<'a>>>,
+    expr: Recursive<chumsky::recursive::Indirect<'a, 'a, Toks<'a>, Expr, Extra<'a>>>,
+) -> impl Parser<'a, Toks<'a>, Expr, Extra<'a>> + Clone {
+    // 制御文先頭のキーワードをチェックして stmt として解析．
+    // それ以外は expr として解析．
+    let stmt_keyword = select_ref! {
+        Token::Par => (),
+        Token::Seq => (),
+        Token::Any => (),
+        Token::Alt => (),
+        Token::Generate => (),
+        Token::Relay => (),
+        Token::Finish => (),
+        Token::Goto => (),
+    };
+    choice((
+        stmt_keyword.rewind().ignore_then(stmt.map(|s: Stmt| {
+            let span = s.span.clone();
+            Expr {
+                kind: ExprKind::Block(Block {
+                    stmts: vec![s],
+                    span: span.clone(),
+                }),
+                span,
+            }
+        })),
+        expr,
+    ))
+}

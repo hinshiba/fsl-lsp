@@ -1,8 +1,6 @@
 //! FSL の構文解析器
 //!
 //! `fsl-lexer` のトークン列を AST に変換する．
-//! 計画では chumsky 0.12 を用いる予定だが，
-//! 現段階では手書き再帰下降パーサで実装している．
 
 pub mod ast;
 pub mod parser;
@@ -211,17 +209,44 @@ mod tests {
         };
     }
 
-    sample_test!(s_fun, "../../../fsl-sample/fsl_tutorial_samples-main/Fun.fsl");
-    sample_test!(s_seq, "../../../fsl-sample/fsl_tutorial_samples-main/Seq.fsl");
-    sample_test!(s_stage1, "../../../fsl-sample/fsl_tutorial_samples-main/Stage1.fsl");
-    sample_test!(s_state1, "../../../fsl-sample/fsl_tutorial_samples-main/State1.fsl");
-    sample_test!(s_add4, "../../../fsl-sample/fsl_tutorial_samples-main/add4.fsl");
-    sample_test!(s_add8, "../../../fsl-sample/fsl_tutorial_samples-main/add8.fsl");
-    sample_test!(s_cpu8, "../../../fsl-sample/fsl_tutorial_samples-main/cpu8.fsl");
+    sample_test!(
+        s_fun,
+        "../../../fsl-sample/fsl_tutorial_samples-main/Fun.fsl"
+    );
+    sample_test!(
+        s_seq,
+        "../../../fsl-sample/fsl_tutorial_samples-main/Seq.fsl"
+    );
+    sample_test!(
+        s_stage1,
+        "../../../fsl-sample/fsl_tutorial_samples-main/Stage1.fsl"
+    );
+    sample_test!(
+        s_state1,
+        "../../../fsl-sample/fsl_tutorial_samples-main/State1.fsl"
+    );
+    sample_test!(
+        s_add4,
+        "../../../fsl-sample/fsl_tutorial_samples-main/add4.fsl"
+    );
+    sample_test!(
+        s_add8,
+        "../../../fsl-sample/fsl_tutorial_samples-main/add8.fsl"
+    );
+    sample_test!(
+        s_cpu8,
+        "../../../fsl-sample/fsl_tutorial_samples-main/cpu8.fsl"
+    );
     sample_test!(s_alu32, "../../../fsl-sample/alu32-main/alu32.fsl");
     sample_test!(s_add32, "../../../fsl-sample/alu32-main/add32.fsl");
     sample_test!(s_top_alu32, "../../../fsl-sample/alu32-main/top_alu32.fsl");
-    sample_test!(s_test_alu32, "../../../fsl-sample/alu32-main/test_alu32.fsl");
+    sample_test!(
+        s_test_alu32,
+        "../../../fsl-sample/alu32-main/test_alu32.fsl"
+    );
     sample_test!(s_mult32, "../../../fsl-sample/mult32-main/mult32.fsl");
-    sample_test!(s_test_mult32, "../../../fsl-sample/mult32-main/test_mult32.fsl");
+    sample_test!(
+        s_test_mult32,
+        "../../../fsl-sample/mult32-main/test_mult32.fsl"
+    );
 }
