@@ -1,0 +1,16 @@
+[package]
+name = "fsl-ls"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+
+[dependencies]
+tower-lsp = "0.20.0"
+tokio = { version = "1.52", features = [
+    "macros",
+    "rt",
+    "rt-multi-thread",
+    "io-std",
+    "io-util",
+] }
+tokio-macros = { version = "2.7" }
