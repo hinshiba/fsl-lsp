@@ -1,7 +1,7 @@
 //! FSL のトークナイザ
 //!
-//! `logos` を用いてソースコードをトークン列に変換する．
-//! 改行とコメントは破棄せず保持する．フォーマッタとASI戦略のため．
+//! ソースコードをトークン列に変換する．
+//! フォーマッタのために改行とコメントは破棄せず保持する．
 
 use logos::Logos;
 
@@ -168,7 +168,7 @@ pub enum Token {
     #[regex(r"[A-Za-z_][A-Za-z0-9_]*", |lex| lex.slice().to_string(), priority = 1)]
     Ident(String),
 
-    // ---- トリビア ----
+    // ---- コメントや空白等 ----
     #[regex(r"//[^\n]*", |lex| lex.slice().to_string(), allow_greedy = true)]
     LineComment(String),
 
@@ -176,7 +176,7 @@ pub enum Token {
     #[regex(r"/\*", block_comment)]
     BlockComment(String),
 
-    /// 改行はフォーマッタとASI戦略のため独立トークンとして保持する．
+    /// 改行はフォーマッタのため独立トークンとして保持する．
     #[token("\n")]
     Newline,
 
@@ -235,7 +235,8 @@ mod tests {
 
     #[test]
     fn keywords() {
-        let toks = kinds("module trait stage state def val reg mem input output new private extends with");
+        let toks =
+            kinds("module trait stage state def val reg mem input output new private extends with");
         assert_eq!(toks[0], Token::Module);
         assert_eq!(toks.last().unwrap(), &Token::With);
     }
