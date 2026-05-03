@@ -6,11 +6,12 @@
 
 use std::collections::HashMap;
 
-use fsl_lexer::Span;
 use fsl_parser::{
     BinaryOp, Block, BlockKind, CompilationUnit, Expr, ExprKind, FnDef, Item, ModuleDef,
     ModuleItem, ParseError, Pattern, RegDecl, Stmt, StmtKind, Type, TypeKind, ValDecl,
 };
+
+pub use fsl_parser::Span;
 
 // ============================================================
 // シンボル

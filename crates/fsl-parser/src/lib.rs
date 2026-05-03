@@ -8,7 +8,9 @@ pub mod parser;
 pub use ast::*;
 pub use parser::{ParseError, ParseResult, parse};
 
-use fsl_lexer::{Span, Token};
+pub use fsl_lexer::Span;
+
+use fsl_lexer::Token;
 
 /// ソース文字列を直接受け取るエントリポイント．
 pub fn parse_source(src: &str) -> (ParseResult, Vec<Span>) {

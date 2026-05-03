@@ -6,4 +6,3 @@ authors.workspace = true
 
 [dependencies]
 fsl-parser = { path = "../fsl-parser" }
-fsl-lexer = { path = "../fsl-lexer" }
