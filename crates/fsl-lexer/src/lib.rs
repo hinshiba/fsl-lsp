@@ -211,15 +211,21 @@ pub struct LexResult {
 pub fn lex(src: &str) -> LexResult {
     let mut tokens = Vec::new();
     let mut errors = Vec::new();
-    let mut lexer = Token::lexer(src);
-    while let Some(result) = lexer.next() {
-        let span = lexer.span();
+
+    for (result, span) in Token::lexer(src).spanned() {
         match result {
-            Ok(tok) => tokens.push((tok, span)),
+            Ok(tok) => tokens.push(SpannedToken {
+                tok: tok,
+                span: span,
+            }),
             Err(_) => errors.push(span),
         }
     }
-    (tokens, errors)
+
+    LexResult {
+        ok: tokens,
+        err: errors,
+    }
 }
 
 /// パーサに渡す前のフィルタ．コメントと改行を除去する．
