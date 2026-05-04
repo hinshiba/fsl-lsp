@@ -195,8 +195,20 @@ fn block_comment(lex: &mut logos::Lexer<Token>) -> String {
     lex.source()[span.start..span.end].to_string()
 }
 
-/// ソースをトークン列に分解する．字句エラー位置を別途返す．
-pub fn lex(src: &str) -> (Vec<(Token, Span)>, Vec<Span>) {
+/// 位置を保持したトークン
+pub struct SpannedToken {
+    pub tok: Token,
+    pub span: Span,
+}
+
+/// 字句解析結果
+pub struct LexResult {
+    pub ok: Vec<SpannedToken>,
+    pub err: Vec<Span>,
+}
+
+/// 文字列をトークン列に分解する．字句エラー位置を別途返す．
+pub fn lex(src: &str) -> LexResult {
     let mut tokens = Vec::new();
     let mut errors = Vec::new();
     let mut lexer = Token::lexer(src);
