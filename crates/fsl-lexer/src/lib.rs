@@ -168,7 +168,7 @@ pub enum Token {
     #[regex(r"[A-Za-z_][A-Za-z0-9_]*", |lex| lex.slice().to_string(), priority = 1)]
     Ident(String),
 
-    // ---- コメントや空白等 ----
+    // ---- コメントや空白等(trivia) ----
     #[regex(r"//[^\n]*", |lex| lex.slice().to_string(), allow_greedy = true)]
     LineComment(String),
 
@@ -228,13 +228,13 @@ pub fn lex(src: &str) -> LexResult {
     }
 }
 
-/// パーサに渡す前のフィルタ．コメントと改行を除去する．
-pub fn strip_trivia(tokens: Vec<(Token, Span)>) -> Vec<(Token, Span)> {
-    tokens
+/// コメント, 改行等のtriviaを除去する．
+pub fn strip_trivia(result: Vec<SpannedToken>) -> Vec<SpannedToken> {
+    result
         .into_iter()
-        .filter(|(t, _)| {
+        .filter(|tok| {
             !matches!(
-                t,
+                tok.tok,
                 Token::LineComment(_) | Token::BlockComment(_) | Token::Newline
             )
         })
