@@ -203,8 +203,8 @@ pub struct SpannedToken {
 
 /// 字句解析結果
 pub struct LexResult {
-    pub ok: Vec<SpannedToken>,
-    pub err: Vec<Span>,
+    pub oks: Vec<SpannedToken>,
+    pub errs: Vec<Span>,
 }
 
 /// 文字列をトークン列に分解する．字句エラー位置を別途返す．
@@ -223,8 +223,8 @@ pub fn lex(src: &str) -> LexResult {
     }
 
     LexResult {
-        ok: tokens,
-        err: errors,
+        oks: tokens,
+        errs: errors,
     }
 }
 
@@ -246,9 +246,9 @@ mod tests {
     use super::*;
 
     fn kinds(src: &str) -> Vec<Token> {
-        let (toks, errs) = lex(src);
-        assert!(errs.is_empty(), "lex errors: {:?}", errs);
-        toks.into_iter().map(|(t, _)| t).collect()
+        let res = lex(src);
+        assert!(res.errs.is_empty(), "lex errors: {:?}", res.errs);
+        res.oks.into_iter().map(|t| t.tok).collect()
     }
 
     #[test]
@@ -305,8 +305,11 @@ mod tests {
 
     #[test]
     fn unterminated_block_comment() {
-        let (toks, errs) = lex("/* never closed");
-        assert!(errs.is_empty());
-        assert!(matches!(toks.last().unwrap().0, Token::BlockComment(_)));
+        let res = lex("/* never closed");
+        assert!(res.errs.is_empty());
+        assert!(matches!(
+            res.oks.last().unwrap().tok,
+            Token::BlockComment(_)
+        ));
     }
 }
