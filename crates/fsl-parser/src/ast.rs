@@ -5,20 +5,7 @@
 
 use fsl_lexer::Span;
 
-/// 位置情報付きノード
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Spanned<T> {
-    pub node: T,
-    pub span: Span,
-}
-
-impl<T> Spanned<T> {
-    pub fn new(node: T, span: Span) -> Self {
-        Self { node, span }
-    }
-}
-
-pub type Ident = Spanned<String>;
+pub type Ident = String;
 
 // ============================================================
 // トップレベル
