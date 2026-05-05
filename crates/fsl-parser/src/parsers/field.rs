@@ -17,19 +17,36 @@ use crate::{
     },
 };
 
+/// モジュール／トレイト本体に並ぶフィールド列
 pub(super) fn fields_def<'tok, I>()
 -> impl Parser<'tok, I, Vec<Spanned<Field>>, extra::Err<Rich<'tok, Token>>>
 where
     I: ValueInput<'tok, Token = Token, Span = SimpleSpan>,
 {
-    let field = choice((reg_def().map(Field::Reg),));
+    let field = choice((
+        // 実質的にコンストラクタ宣言
+        input_def().map(Field::Input),
+        output_def(),
+        // フィールド変数
+        reg_def().map(Field::Reg),
+        mem_def().map(Field::Mem),
+        val_or_instance_def(),
+        // メソッド
+        fn_def().map(Field::Fn),
+        stage_def().map(Field::Stage),
+        // その他ブロック
+        always_def().map(Field::Always),
+        initial_def().map(Field::Initial),
+        // typeによる複合型宣言
+        composite_def().map(Field::Composite),
+    ));
 
     field
-        .repeated()
         .map_with(|f, e| Spanned {
             inner: f,
             span: e.span(),
         })
+        .repeated()
         .collect()
 }
 
