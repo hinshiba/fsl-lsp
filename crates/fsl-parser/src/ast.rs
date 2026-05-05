@@ -25,7 +25,7 @@ pub enum Item {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TraitDef {
     pub name: Ident,
-    pub items: Vec<ModuleItem>,
+    pub items: Vec<Field>,
     pub span: Span,
 }
 
@@ -34,7 +34,7 @@ pub struct ModuleDef {
     pub name: Ident,
     pub extends: Option<Ident>,
     pub with_traits: Vec<Ident>,
-    pub items: Vec<ModuleItem>,
+    pub items: Vec<Field>,
     pub span: Span,
 }
 
@@ -43,7 +43,7 @@ pub struct ModuleDef {
 // ============================================================
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ModuleItem {
+pub enum Field {
     Reg(RegDecl),
     Mem(MemDecl),
     Input(PortDecl),
