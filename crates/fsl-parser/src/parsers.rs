@@ -2,13 +2,20 @@
 //!
 //! 入力は `fsl-lexer` のトリビア除去済みトークン列．
 
-use chumsky::input::{Input, MappedInput};
+use chumsky::input::{Input, MappedInput, ValueInput};
 use chumsky::pratt::{infix, left, postfix, prefix};
 use chumsky::prelude::*;
 use chumsky::recursive::Recursive;
 
 use crate::ast::{self, *};
-use fsl_lexer::{Span, Token};
+use crate::parsers::item::item_def;
+use fsl_lexer::{Span, SpannedToken, Token};
+
+mod atom;
+mod expr;
+mod field;
+mod item;
+mod typedef;
 
 /// 構文エラー
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -32,8 +39,7 @@ type Toks<'a> =
     MappedInput<'a, Token, Span, &'a [(Token, Span)], fn(&(Token, Span)) -> (&Token, &Span)>;
 type Extra<'a> = extra::Err<Rich<'a, Token, Span>>;
 
-/// パースエントリポイント．
-pub fn parse(tokens: Vec<(Token, Span)>, src_end: usize) -> ParseResult {
+pub fn parse_token(tokens: Vec<SpannedToken>, src_end: usize) -> ParseResult {
     let eoi: Span = src_end..src_end;
     let proj: fn(&(Token, Span)) -> (&Token, &Span) = token_proj;
     let stream = tokens.as_slice().map(eoi, proj);
@@ -50,20 +56,25 @@ pub fn parse(tokens: Vec<(Token, Span)>, src_end: usize) -> ParseResult {
 }
 
 // ============================================================
-// 補助
-// ============================================================
-
-fn ident<'a>() -> impl Parser<'a, Toks<'a>, Ident, Extra<'a>> + Clone {
-    select_ref! {
-        Token::Ident(s) = e => ast::Spanned::new(s.clone(), e.span())
-    }
-}
-
-// ============================================================
 // メインパーサ
 // ============================================================
 
-fn parser<'a>() -> impl Parser<'a, Toks<'a>, CompilationUnit, Extra<'a>> {
+fn parser<'tok, I>() -> impl Parser<'tok, I, Spanned<CompilationUnit>, extra::Err<Rich<'tok, Token>>>
+where
+    I: ValueInput<'tok, Token = Token, Span = SimpleSpan>,
+{
+    item_def()
+        .repeated()
+        .collect()
+        .map_with(|items, e| Spanned {
+            inner: CompilationUnit { items },
+            span: e.span(),
+        })
+}
+
+// ---- 補助関数 ----
+
+fn parser2<'a>() -> impl Parser<'a, Toks<'a>, CompilationUnit, Extra<'a>> {
     // ---- 前方宣言 ----
     let mut expr = Recursive::declare();
     let mut stmt = Recursive::declare();
@@ -708,7 +719,7 @@ fn parser<'a>() -> impl Parser<'a, Toks<'a>, CompilationUnit, Extra<'a>> {
             .then_ignore(just(Token::Colon))
             .then(ty.clone())
             .map_with(|((name, params), ret), e| {
-                ModuleItem::OutputFn(OutputFnDecl {
+                Field::OutputFn(OutputFnDecl {
                     name,
                     params,
                     ret,
@@ -720,7 +731,7 @@ fn parser<'a>() -> impl Parser<'a, Toks<'a>, CompilationUnit, Extra<'a>> {
             .then_ignore(just(Token::Colon))
             .then(ty.clone())
             .map_with(|(name, ty), e| {
-                ModuleItem::Output(PortDecl {
+                Field::Output(PortDecl {
                     name,
                     ty,
                     span: e.span(),
@@ -788,14 +799,14 @@ fn parser<'a>() -> impl Parser<'a, Toks<'a>, CompilationUnit, Extra<'a>> {
         .map_with(|b, e| {
             let mut b = b;
             b.span = e.span();
-            ModuleItem::Always(b)
+            Field::Always(b)
         });
     let initial_block = just(Token::Initial)
         .ignore_then(block.clone())
         .map_with(|b, e| {
             let mut b = b;
             b.span = e.span();
-            ModuleItem::Initial(b)
+            Field::Initial(b)
         });
 
     // stage 定義
@@ -870,7 +881,7 @@ fn parser<'a>() -> impl Parser<'a, Toks<'a>, CompilationUnit, Extra<'a>> {
             let span: Span = e.span();
             match (&pattern, rhs) {
                 (ValPattern::Single(name), Either2::Instance(module_name)) => {
-                    ModuleItem::Instance(InstanceDecl {
+                    Field::Instance(InstanceDecl {
                         name: name.clone(),
                         module_name,
                         span,
@@ -878,7 +889,7 @@ fn parser<'a>() -> impl Parser<'a, Toks<'a>, CompilationUnit, Extra<'a>> {
                 }
                 (_, Either2::Instance(module_name)) => {
                     // tuple パターンに対する new は構文外として ValDecl に格上げ
-                    ModuleItem::Val(ValDecl {
+                    Field::Val(ValDecl {
                         pattern,
                         ty,
                         init: Expr {
@@ -888,7 +899,7 @@ fn parser<'a>() -> impl Parser<'a, Toks<'a>, CompilationUnit, Extra<'a>> {
                         span,
                     })
                 }
-                (_, Either2::Expr(init)) => ModuleItem::Val(ValDecl {
+                (_, Either2::Expr(init)) => Field::Val(ValDecl {
                     pattern,
                     ty,
                     init,
@@ -898,16 +909,16 @@ fn parser<'a>() -> impl Parser<'a, Toks<'a>, CompilationUnit, Extra<'a>> {
         });
 
     let module_item = choice((
-        reg_decl.map(ModuleItem::Reg),
-        mem_decl.map(ModuleItem::Mem),
-        input_decl.map(ModuleItem::Input),
+        reg_decl.map(Field::Reg),
+        mem_decl.map(Field::Mem),
+        input_decl.map(Field::Input),
         output_item,
         always_block,
         initial_block,
-        stage_def.map(ModuleItem::Stage),
-        type_def.map(ModuleItem::Type),
+        stage_def.map(Field::Stage),
+        type_def.map(Field::Type),
         val_or_instance,
-        fn_def.map(ModuleItem::Fn),
+        fn_def.map(Field::Fn),
     ))
     .boxed();
 
@@ -967,8 +978,6 @@ fn parser<'a>() -> impl Parser<'a, Toks<'a>, CompilationUnit, Extra<'a>> {
     unit.then_ignore(just(Token::Semicolon).repeated())
         .then_ignore(end())
 }
-
-// ---- 補助関数 ----
 
 fn mk_bin(op: BinaryOp, l: Expr, r: Expr, span: Span) -> Expr {
     Expr {
