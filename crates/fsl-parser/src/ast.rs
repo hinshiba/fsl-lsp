@@ -3,9 +3,10 @@
 //! チュートリアル例から逆算した文法に対応する．
 //! ノードはソース上の位置情報 `Span` を持つ．
 
+use chumsky::span::Spanned;
 use fsl_lexer::Span;
 
-pub type Ident = String;
+pub type Ident = Spanned<String>;
 
 // ============================================================
 // トップレベル
@@ -13,7 +14,7 @@ pub type Ident = String;
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct CompilationUnit {
-    pub items: Vec<Item>,
+    pub items: Vec<Spanned<Item>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -25,17 +26,15 @@ pub enum Item {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TraitDef {
     pub name: Ident,
-    pub items: Vec<Field>,
-    pub span: Span,
+    pub items: Vec<Spanned<Field>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModuleDef {
     pub name: Ident,
     pub extends: Option<Ident>,
-    pub with_traits: Vec<Ident>,
-    pub items: Vec<Field>,
-    pub span: Span,
+    pub with_traits: Option<Vec<Ident>>,
+    pub items: Vec<Spanned<Field>>,
 }
 
 // ============================================================
@@ -54,49 +53,44 @@ pub enum Field {
     Always(Block),
     Initial(Block),
     Stage(StageDef),
-    Type(TypeDef),
+    Composite(CompositeDef),
     Val(ValDecl),
     /// 解析失敗時のプレースホルダ
-    Error(Span),
+    Error,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RegDecl {
     pub name: Ident,
-    pub ty: Type,
+    pub ty: FslType,
     pub init: Option<Expr>,
-    pub span: Span,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MemDecl {
     pub name: Ident,
-    pub elem_ty: Type,
+    pub elem_ty: FslType,
     pub size: Expr,
     pub init: Vec<Expr>,
-    pub span: Span,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PortDecl {
     pub name: Ident,
-    pub ty: Type,
-    pub span: Span,
+    pub ty: FslType,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OutputFnDecl {
     pub name: Ident,
     pub params: Vec<Param>,
-    pub ret: Type,
-    pub span: Span,
+    pub ret: FslType,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InstanceDecl {
     pub name: Ident,
     pub module_name: Ident,
-    pub span: Span,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -106,10 +100,9 @@ pub struct FnDef {
     pub receiver: Option<Ident>,
     pub name: Ident,
     pub params: Vec<Param>,
-    pub ret: Option<Type>,
+    pub ret: Option<FslType>,
     pub body_kind: FnBodyKind,
     pub body: Block,
-    pub span: Span,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -127,7 +120,6 @@ pub struct StageDef {
     pub name: Ident,
     pub params: Vec<Param>,
     pub body: Vec<StageItem>,
-    pub span: Span,
 }
 
 /// stage 本体には state 定義，stage ローカル変数（reg/val），文が混在する．
@@ -148,24 +140,22 @@ pub struct StateDef {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TypeDef {
+pub struct CompositeDef {
     pub name: Ident,
-    pub fields: Vec<TypeField>,
-    pub span: Span,
+    pub fields: Vec<CompositeField>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TypeField {
+pub struct CompositeField {
     pub name: Ident,
-    pub ty: Type,
+    pub ty: FslType,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ValDecl {
     pub pattern: ValPattern,
-    pub ty: Option<Type>,
+    pub ty: Option<FslType>,
     pub init: Expr,
-    pub span: Span,
 }
 
 /// `val x = ...` または `val (a, b, c) = ...`
@@ -179,30 +169,26 @@ pub enum ValPattern {
 pub struct Param {
     pub name: Ident,
     /// 引数型は省略可（`def add(a, b, ci): Unit` のように上位スコープから流用される）
-    pub ty: Option<Type>,
+    pub ty: Option<FslType>,
 }
 
 // ============================================================
 // 型
 // ============================================================
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Type {
-    pub kind: TypeKind,
-    pub span: Span,
-}
+pub type FslType = Spanned<FslType_>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TypeKind {
+pub enum FslType_ {
     Unit,
     Boolean,
     /// `Bit(n)` の n は意味解析で評価する．構文段階では式のまま保持．
     Bit(Box<Expr>),
     Int,
     String,
-    Array(Box<Type>),
-    List(Box<Type>),
-    Tuple(Vec<Type>),
+    Array(Box<FslType>),
+    List(Box<FslType>),
+    Tuple(Vec<FslType>),
     /// ユーザ定義型・モジュール名・trait名
     Named(Ident),
 }
@@ -214,13 +200,11 @@ pub enum TypeKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Block {
     pub stmts: Vec<Stmt>,
-    pub span: Span,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Stmt {
     pub kind: StmtKind,
-    pub span: Span,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -252,14 +236,11 @@ pub enum BlockKind {
 // 式
 // ============================================================
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Expr {
-    pub kind: ExprKind,
-    pub span: Span,
-}
+pub type Expr = Spanned<Expr_>;
 
+// Spanned<>にするのを一括で行うため_をつけてある
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ExprKind {
+pub enum Expr_ {
     /// 整数リテラルの未解釈ソース文字列
     Int(String),
     Str(String),
