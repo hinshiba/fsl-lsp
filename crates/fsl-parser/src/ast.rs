@@ -214,7 +214,7 @@ pub enum Statement {
     Relay(Ident, Vec<Expr>),
     Finish,
     Goto(Ident),
-    /// match 文・case 節含むので Stmt と Expr の両方で構成可能
+    /// match 文・case 節含むので Statement と Expr の両方で構成可能
     Expr(Expr),
 }
 
