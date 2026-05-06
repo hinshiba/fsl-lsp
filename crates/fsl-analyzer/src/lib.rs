@@ -1,14 +1,10 @@
 //! FSL のアナライザ
-//!
-//! 計画フェーズ1の最小構成として，シンボルテーブルの構築と
-//! 簡易的な診断生成のインタフェースを定義する．
-//! スコープ解析と nfc 一次基準の型診断は今後実装する．
 
 use std::collections::HashMap;
 
 use fsl_parser::{
-    BinaryOp, Block, BlockKind, CompilationUnit, Expr, ExprKind, FnDef, Item, ModuleDef,
-    ModuleItem, ParseError, Pattern, RegDecl, Stmt, StmtKind, Type, TypeKind, ValDecl,
+    BinaryOp, Block, BlockKind, CompilationUnit, Expr, ExprKind, Field, FnDef, FslType, Item,
+    ModuleDef, ParseError, Pattern, RegDecl, Stmt, Statement, Type, ValDecl,
 };
 
 pub use fsl_parser::Span;
@@ -37,17 +33,17 @@ pub enum SymbolType {
 impl SymbolType {
     pub fn from_ast(ty: &Type) -> Self {
         match &ty.kind {
-            TypeKind::Unit => SymbolType::Unit,
-            TypeKind::Boolean => SymbolType::Boolean,
-            TypeKind::Int => SymbolType::Int,
-            TypeKind::String => SymbolType::String,
-            TypeKind::Bit(expr) => SymbolType::Bit {
+            FslType::Unit => SymbolType::Unit,
+            FslType::Boolean => SymbolType::Boolean,
+            FslType::Int => SymbolType::Int,
+            FslType::String => SymbolType::String,
+            FslType::Bit(expr) => SymbolType::Bit {
                 width: const_int(expr),
             },
-            TypeKind::Array(inner) => SymbolType::Array(Box::new(Self::from_ast(inner))),
-            TypeKind::List(inner) => SymbolType::List(Box::new(Self::from_ast(inner))),
-            TypeKind::Tuple(elems) => SymbolType::Tuple(elems.iter().map(Self::from_ast).collect()),
-            TypeKind::Named(name) => SymbolType::Named(name.node.clone()),
+            FslType::Array(inner) => SymbolType::Array(Box::new(Self::from_ast(inner))),
+            FslType::List(inner) => SymbolType::List(Box::new(Self::from_ast(inner))),
+            FslType::Tuple(elems) => SymbolType::Tuple(elems.iter().map(Self::from_ast).collect()),
+            FslType::Named(name) => SymbolType::Named(name.node.clone()),
         }
     }
 }
@@ -198,13 +194,22 @@ impl Diagnostic {
 
 #[derive(Debug, Default, Clone)]
 pub struct AnalysisResult {
+    /// 構文の全要素
+    pub unit: CompilationUnit,
+    /// シンボルテーブル
     pub top: Scope,
+    /// 診断情報
     pub diagnostics: Vec<Diagnostic>,
 }
 
 // ============================================================
 // 解析エントリポイント（ひな形）
 // ============================================================
+
+/// ソース文字列を直接受け取るエントリポイント．
+pub fn parse_source(src: &str) -> AnalysisResult {
+    fsl_parser
+}
 
 /// CompilationUnit を受け取り，トップレベルのシンボルテーブルと診断を返す．
 /// 現状はトップレベル（モジュール・trait）のみを登録する．
@@ -304,14 +309,7 @@ fn validate_val(_v: &ValDecl) -> Vec<Diagnostic> {
 
 // 以下は将来拡張で参照するためにシンボルを匿名で利用しないよう抑制する
 #[allow(dead_code)]
-fn _ensure_used_imports(
-    _: ModuleItem,
-    _: StmtKind,
-    _: ExprKind,
-    _: BinaryOp,
-    _: BlockKind,
-    _: Pattern,
-) {
+fn _ensure_used_imports(_: Field, _: Statement, _: ExprKind, _: BinaryOp, _: BlockKind, _: Pattern) {
 }
 
 // ============================================================
@@ -321,11 +319,11 @@ fn _ensure_used_imports(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fsl_parser::parse_source;
+    use fsl_parser::parse;
 
     #[test]
     fn registers_top_level_module() {
-        let (parsed, lex_errs) = parse_source("module M {}");
+        let (parsed, lex_errs) = parse("module M {}");
         assert!(lex_errs.is_empty());
         assert!(parsed.errors.is_empty());
         let result = analyze(&parsed.unit);
@@ -338,7 +336,7 @@ mod tests {
 
     #[test]
     fn duplicate_module_diagnostic() {
-        let (parsed, _) = parse_source("module M {} module M {}");
+        let (parsed, _) = parse("module M {} module M {}");
         let result = analyze(&parsed.unit);
         assert_eq!(result.diagnostics.len(), 1);
         assert_eq!(result.diagnostics[0].severity, Severity::Error);
@@ -346,7 +344,7 @@ mod tests {
 
     #[test]
     fn registers_trait() {
-        let (parsed, _) = parse_source("trait T { val A = 0 }");
+        let (parsed, _) = parse("trait T { val A = 0 }");
         let result = analyze(&parsed.unit);
         assert!(matches!(
             result.top.lookup("T").unwrap().kind,
