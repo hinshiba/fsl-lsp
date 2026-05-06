@@ -3,17 +3,21 @@ use chumsky::{
     error::Rich,
     extra,
     input::ValueInput,
-    primitive::{choice, just, todo},
+    primitive::{choice, just},
     span::{SimpleSpan, Spanned},
 };
 use fsl_lexer::Token;
 
 use crate::{
-    Field, Item, ModuleDef, RegDecl, TraitDef,
+    Block, CompositeDef, CompositeField, Expr, Field, FnBodyKind, FnDef, Ident, InstanceDecl,
+    OutputFnDecl, Param, PortDecl, StageDef, StageItem, StateDef, Stmt, StmtKind, ValDecl, ValLhs,
     parsers::{
-        atom::{self, ident_def},
+        atom::ident_def,
+        block::block_def,
         expr::expr_def,
+        stmt::stmt_def,
         typedef::type_def,
+        valdecl::{mem_def, reg_def},
     },
 };
 
@@ -164,4 +168,186 @@ where
     I: ValueInput<'tok, Token = Token, Span = SimpleSpan>,
 {
     just(Token::Initial).ignore_then(block_def())
+}
+
+/// stage 定義: `stage name(params) { stage_items }`
+pub(super) fn stage_def<'tok, I>() -> impl Parser<'tok, I, StageDef, extra::Err<Rich<'tok, Token>>>
+where
+    I: ValueInput<'tok, Token = Token, Span = SimpleSpan>,
+{
+    just(Token::Stage)
+        // ステージ名
+        .ignore_then(ident_def())
+        // パラメータ列
+        .then(params_def())
+        // ステージ本体
+        .then(
+            stage_item_def()
+                .spanned()
+                .repeated()
+                .collect()
+                .delimited_by(just(Token::LBrace), just(Token::RBrace)),
+        )
+        .map(|((name, params), body)| StageDef { name, params, body })
+}
+
+/// 複合型定義: `type name(field: T, ...)`
+pub(super) fn composite_def<'tok, I>()
+-> impl Parser<'tok, I, CompositeDef, extra::Err<Rich<'tok, Token>>>
+where
+    I: ValueInput<'tok, Token = Token, Span = SimpleSpan>,
+{
+    let composite_field = ident_def()
+        .then(just(Token::Colon).ignore_then(type_def()))
+        .map(|(name, ty)| CompositeField { name, ty });
+
+    just(Token::Type)
+        .ignore_then(ident_def())
+        .then(
+            composite_field
+                .separated_by(just(Token::Comma))
+                .allow_trailing()
+                .collect()
+                .delimited_by(just(Token::LParen), just(Token::RParen)),
+        )
+        .map(|(name, fields)| CompositeDef { name, fields })
+}
+
+/// `val pat[: T] = (new ModName | expr)`
+///
+/// 単独識別子に対する `new` のみ `Field::Instance` に振り分け，他は `Field::Val` とする．
+pub(super) fn val_or_instance_def<'tok, I>()
+-> impl Parser<'tok, I, Field, extra::Err<Rich<'tok, Token>>>
+where
+    I: ValueInput<'tok, Token = Token, Span = SimpleSpan>,
+{
+    enum ValRhs {
+        Instance(Ident),
+        Expr(Expr),
+    }
+
+    just(Token::Val).ignore_then(choice((
+        // タプル宣言と代入 型は書かない前提であることに注意
+        val_tuple_def()
+            .then_ignore(just(Token::Eq))
+            .then(expr_def())
+            .map(|(lhs, expr)| {
+                Field::Val(ValDecl {
+                    pattern: ValLhs::Tuple(lhs),
+                    ty: None,
+                    init: expr,
+                })
+            }),
+        // val ident =
+        ident_def()
+            .then(just(Token::Colon).ignore_then(type_def()).or_not())
+            .then_ignore(just(Token::Eq))
+            .then(choice((
+                // new
+                just(Token::New)
+                    .ignore_then(ident_def())
+                    .map(ValRhs::Instance),
+                // expr
+                expr_def().map(ValRhs::Expr),
+            )))
+            .map(|((ident, ty), rhs)| match rhs {
+                ValRhs::Expr(e) => Field::Val(ValDecl {
+                    pattern: ValLhs::Single(ident),
+                    ty: ty,
+                    init: e,
+                }),
+                ValRhs::Instance(i) => Field::Instance(InstanceDecl {
+                    name: ident,
+                    module_name: i,
+                }),
+            }),
+    )))
+}
+
+// ============================================================
+// 局所ヘルパー
+// ============================================================
+
+/// パラメータ単体: `name[: T]`
+fn param_def<'tok, I>() -> impl Parser<'tok, I, Param, extra::Err<Rich<'tok, Token>>>
+where
+    I: ValueInput<'tok, Token = Token, Span = SimpleSpan>,
+{
+    // 仮引数名
+    ident_def()
+        // 型
+        .then(just(Token::Colon).ignore_then(type_def()).or_not())
+        .map(|(name, ty)| Param { name, ty })
+}
+
+/// パラメータ列: `(p1, p2, ...)`
+fn params_def<'tok, I>() -> impl Parser<'tok, I, Vec<Spanned<Param>>, extra::Err<Rich<'tok, Token>>>
+where
+    I: ValueInput<'tok, Token = Token, Span = SimpleSpan>,
+{
+    // パラメータ
+    param_def()
+        .spanned()
+        // p1, p2
+        .separated_by(just(Token::Comma))
+        .collect()
+        // (...)
+        .delimited_by(just(Token::LParen), just(Token::RParen))
+}
+
+/// タプル宣言 val (a, b, c) = (1, 2, 3) 式
+fn val_tuple_def<'tok, I>() -> impl Parser<'tok, I, Vec<Ident>, extra::Err<Rich<'tok, Token>>>
+where
+    I: ValueInput<'tok, Token = Token, Span = SimpleSpan>,
+{
+    ident_def()
+        // ident, ident, ..., ident
+        .separated_by(just(Token::Comma))
+        .collect()
+        // (...)
+        .delimited_by(just(Token::LParen), just(Token::RParen))
+}
+
+/// `val pat[: T] = expr` stage 内用のためインスタンス宣言がない
+fn val_decl_def<'tok, I>() -> impl Parser<'tok, I, ValDecl, extra::Err<Rich<'tok, Token>>>
+where
+    I: ValueInput<'tok, Token = Token, Span = SimpleSpan>,
+{
+    just(Token::Val)
+        .ignore_then(val_tuple_def())
+        .then(just(Token::Colon).ignore_then(type_def()).or_not())
+        .then_ignore(just(Token::Eq))
+        .then(expr_def())
+        .map(|((pattern, ty), init)| ValDecl {
+            pattern: ValLhs::Tuple(pattern),
+            ty,
+            init,
+        })
+}
+
+/// stage 本体に出現する1要素
+fn stage_item_def<'tok, I>() -> impl Parser<'tok, I, StageItem, extra::Err<Rich<'tok, Token>>>
+where
+    I: ValueInput<'tok, Token = Token, Span = SimpleSpan>,
+{
+    choice((
+        state_def().map(StageItem::State),
+        reg_def().map(StageItem::Reg),
+        mem_def().map(StageItem::Mem),
+        val_decl_def().map(StageItem::Val),
+        stmt_def().map(StageItem::Stmt),
+    ))
+}
+
+/// stage 内の state 定義: `state name <stmt>`
+fn state_def<'tok, I>() -> impl Parser<'tok, I, StateDef, extra::Err<Rich<'tok, Token>>>
+where
+    I: ValueInput<'tok, Token = Token, Span = SimpleSpan>,
+{
+    just(Token::State)
+        // ステート名
+        .ignore_then(ident_def())
+        // 本体となる文
+        .then(stmt_def())
+        .map(|(name, body)| StateDef { name, body })
 }
