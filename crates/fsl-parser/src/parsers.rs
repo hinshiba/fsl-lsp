@@ -128,11 +128,11 @@ fn parser2<'a>() -> impl Parser<'a, Toks<'a>, CompilationUnit, Extra<'a>> {
         let named_or_builtin = ident().map_with(|name, e| {
             let span: Span = e.span();
             let kind = match name.node.as_str() {
-                "Unit" => TypeKind::Unit,
-                "Boolean" => TypeKind::Boolean,
-                "Int" => TypeKind::Int,
-                "String" => TypeKind::String,
-                _ => TypeKind::Named(name.clone()),
+                "Unit" => FslType::Unit,
+                "Boolean" => FslType::Boolean,
+                "Int" => FslType::Int,
+                "String" => FslType::String,
+                _ => FslType::Named(name.clone()),
             };
             Type { kind, span }
         });
@@ -143,7 +143,7 @@ fn parser2<'a>() -> impl Parser<'a, Toks<'a>, CompilationUnit, Extra<'a>> {
                     .delimited_by(just(Token::LParen), just(Token::RParen)),
             )
             .map_with(|n, e| Type {
-                kind: TypeKind::Bit(Box::new(n)),
+                kind: FslType::Bit(Box::new(n)),
                 span: e.span(),
             });
 
@@ -153,7 +153,7 @@ fn parser2<'a>() -> impl Parser<'a, Toks<'a>, CompilationUnit, Extra<'a>> {
                     .delimited_by(just(Token::LBracket), just(Token::RBracket)),
             )
             .map_with(|inner, e| Type {
-                kind: TypeKind::Array(Box::new(inner)),
+                kind: FslType::Array(Box::new(inner)),
                 span: e.span(),
             });
 
@@ -163,7 +163,7 @@ fn parser2<'a>() -> impl Parser<'a, Toks<'a>, CompilationUnit, Extra<'a>> {
                     .delimited_by(just(Token::LBracket), just(Token::RBracket)),
             )
             .map_with(|inner, e| Type {
-                kind: TypeKind::List(Box::new(inner)),
+                kind: FslType::List(Box::new(inner)),
                 span: e.span(),
             });
 
@@ -174,7 +174,7 @@ fn parser2<'a>() -> impl Parser<'a, Toks<'a>, CompilationUnit, Extra<'a>> {
             .collect::<Vec<_>>()
             .delimited_by(just(Token::LParen), just(Token::RParen))
             .map_with(|tys, e| Type {
-                kind: TypeKind::Tuple(tys),
+                kind: FslType::Tuple(tys),
                 span: e.span(),
             });
 
@@ -573,13 +573,13 @@ fn parser2<'a>() -> impl Parser<'a, Toks<'a>, CompilationUnit, Extra<'a>> {
 
     // ---- val 共通 ----
     let val_pattern = {
-        let single = ident().map(ValPattern::Single);
+        let single = ident().map(ValLhs::Single);
         let tuple = ident()
             .separated_by(just(Token::Comma))
             .allow_trailing()
             .collect::<Vec<_>>()
             .delimited_by(just(Token::LParen), just(Token::RParen))
-            .map(ValPattern::Tuple);
+            .map(ValLhs::Tuple);
         choice((tuple, single))
     };
 
@@ -598,7 +598,7 @@ fn parser2<'a>() -> impl Parser<'a, Toks<'a>, CompilationUnit, Extra<'a>> {
             });
 
         let val_stmt_wrap = val_stmt.clone().map_with(|v, e| Stmt {
-            kind: StmtKind::Val(v),
+            kind: Statement::Val(v),
             span: e.span(),
         });
 
@@ -610,7 +610,7 @@ fn parser2<'a>() -> impl Parser<'a, Toks<'a>, CompilationUnit, Extra<'a>> {
         ))
         .then(block.clone())
         .map_with(|(k, b), e| Stmt {
-            kind: StmtKind::BlockKind(k, b),
+            kind: Statement::BlockKind(k, b),
             span: e.span(),
         });
 
@@ -625,7 +625,7 @@ fn parser2<'a>() -> impl Parser<'a, Toks<'a>, CompilationUnit, Extra<'a>> {
             .ignore_then(ident())
             .then(arg_list.clone())
             .map_with(|(target, args), e| Stmt {
-                kind: StmtKind::Generate(target, args),
+                kind: Statement::Generate(target, args),
                 span: e.span(),
             });
 
@@ -633,19 +633,19 @@ fn parser2<'a>() -> impl Parser<'a, Toks<'a>, CompilationUnit, Extra<'a>> {
             .ignore_then(ident())
             .then(arg_list)
             .map_with(|(target, args), e| Stmt {
-                kind: StmtKind::Relay(target, args),
+                kind: Statement::Relay(target, args),
                 span: e.span(),
             });
 
         let finish_stmt = just(Token::Finish).map_with(|_, e| Stmt {
-            kind: StmtKind::Finish,
+            kind: Statement::Finish,
             span: e.span(),
         });
 
         let goto_stmt = just(Token::Goto)
             .ignore_then(ident())
             .map_with(|target, e| Stmt {
-                kind: StmtKind::Goto(target),
+                kind: Statement::Goto(target),
                 span: e.span(),
             });
 
@@ -666,9 +666,9 @@ fn parser2<'a>() -> impl Parser<'a, Toks<'a>, CompilationUnit, Extra<'a>> {
             .map_with(|(lhs, opt), e| {
                 let span: Span = e.span();
                 let kind = match opt {
-                    Some((true, rhs)) => StmtKind::RegAssign(lhs, rhs),
-                    Some((false, rhs)) => StmtKind::Assign(lhs, rhs),
-                    None => StmtKind::Expr(lhs),
+                    Some((true, rhs)) => Statement::RegAssign(lhs, rhs),
+                    Some((false, rhs)) => Statement::Assign(lhs, rhs),
+                    None => Statement::Expr(lhs),
                 };
                 Stmt { kind, span }
             });
@@ -698,156 +698,6 @@ fn parser2<'a>() -> impl Parser<'a, Toks<'a>, CompilationUnit, Extra<'a>> {
             ty,
             init,
             span: e.span(),
-        });
-
-    let reg_decl = just(Token::Reg)
-        .ignore_then(ident())
-        .then_ignore(just(Token::Colon))
-        .then(ty.clone())
-        .then(just(Token::Eq).ignore_then(expr.clone()).or_not())
-        .map_with(|((name, ty), init), e| RegDecl {
-            name,
-            ty,
-            init,
-            span: e.span(),
-        });
-
-    let mem_decl = just(Token::Mem)
-        .ignore_then(
-            ty.clone()
-                .delimited_by(just(Token::LBracket), just(Token::RBracket)),
-        )
-        .then(ident())
-        .then(
-            expr.clone()
-                .delimited_by(just(Token::LParen), just(Token::RParen)),
-        )
-        .then(
-            just(Token::Eq)
-                .ignore_then(
-                    expr.clone()
-                        .separated_by(just(Token::Comma))
-                        .allow_trailing()
-                        .collect::<Vec<_>>()
-                        .delimited_by(just(Token::LParen), just(Token::RParen)),
-                )
-                .or_not(),
-        )
-        .map_with(|(((elem_ty, name), size), init_opt), e| MemDecl {
-            name,
-            elem_ty,
-            size,
-            init: init_opt.unwrap_or_default(),
-            span: e.span(),
-        });
-
-    let input_decl = just(Token::Input)
-        .ignore_then(ident())
-        .then_ignore(just(Token::Colon))
-        .then(ty.clone())
-        .map_with(|(name, ty), e| PortDecl {
-            name,
-            ty,
-            span: e.span(),
-        });
-
-    // output port / output def
-    let output_item = just(Token::Output).ignore_then(choice((
-        // `output def name(params): T`
-        just(Token::Def)
-            .ignore_then(ident())
-            .then(params.clone())
-            .then_ignore(just(Token::Colon))
-            .then(ty.clone())
-            .map_with(|((name, params), ret), e| {
-                Field::OutputFn(OutputFnDecl {
-                    name,
-                    params,
-                    ret,
-                    span: e.span(),
-                })
-            }),
-        // `output name: T`
-        ident()
-            .then_ignore(just(Token::Colon))
-            .then(ty.clone())
-            .map_with(|(name, ty), e| {
-                Field::Output(PortDecl {
-                    name,
-                    ty,
-                    span: e.span(),
-                })
-            }),
-    )));
-
-    let fn_def = {
-        // `[private] def [recv.]name(params)[: T] (= body | seq block | par block)`
-        let body = choice((
-            just(Token::Eq)
-                .ignore_then(choice((
-                    block.clone(),
-                    expr.clone().map(|e: Expr| {
-                        let span = e.span.clone();
-                        Block {
-                            stmts: vec![Stmt {
-                                kind: StmtKind::Expr(e),
-                                span: span.clone(),
-                            }],
-                            span,
-                        }
-                    }),
-                )))
-                .map(|b| (FnBodyKind::Expr, b)),
-            just(Token::Seq)
-                .ignore_then(block.clone())
-                .map(|b| (FnBodyKind::Seq, b)),
-            just(Token::Par)
-                .ignore_then(block.clone())
-                .map(|b| (FnBodyKind::Par, b)),
-        ));
-
-        just(Token::Private)
-            .or_not()
-            .then_ignore(just(Token::Def))
-            .then(ident())
-            .then(just(Token::Dot).ignore_then(ident()).or_not())
-            .then(params.clone())
-            .then(just(Token::Colon).ignore_then(ty.clone()).or_not())
-            .then(body)
-            .map_with(
-                |(((((priv_kw, first), recv_opt), params), ret), (body_kind, body)), e| {
-                    let (receiver, name) = if let Some(real) = recv_opt {
-                        (Some(first), real)
-                    } else {
-                        (None, first)
-                    };
-                    FnDef {
-                        is_private: priv_kw.is_some(),
-                        receiver,
-                        name,
-                        params,
-                        ret,
-                        body_kind,
-                        body,
-                        span: e.span(),
-                    }
-                },
-            )
-    };
-
-    let always_block = just(Token::Always)
-        .ignore_then(block.clone())
-        .map_with(|b, e| {
-            let mut b = b;
-            b.span = e.span();
-            Field::Always(b)
-        });
-    let initial_block = just(Token::Initial)
-        .ignore_then(block.clone())
-        .map_with(|b, e| {
-            let mut b = b;
-            b.span = e.span();
-            Field::Initial(b)
         });
 
     // stage 定義
@@ -889,7 +739,7 @@ fn parser2<'a>() -> impl Parser<'a, Toks<'a>, CompilationUnit, Extra<'a>> {
     let type_field = ident()
         .then_ignore(just(Token::Colon))
         .then(ty.clone())
-        .map(|(name, ty)| TypeField { name, ty });
+        .map(|(name, ty)| CompositeField { name, ty });
 
     let type_def = just(Token::Type)
         .ignore_then(ident())
@@ -900,7 +750,7 @@ fn parser2<'a>() -> impl Parser<'a, Toks<'a>, CompilationUnit, Extra<'a>> {
                 .collect::<Vec<_>>()
                 .delimited_by(just(Token::LParen), just(Token::RParen)),
         )
-        .map_with(|(name, fields), e| TypeDef {
+        .map_with(|(name, fields), e| CompositeDef {
             name,
             fields,
             span: e.span(),
@@ -921,7 +771,7 @@ fn parser2<'a>() -> impl Parser<'a, Toks<'a>, CompilationUnit, Extra<'a>> {
         .map_with(|((pattern, ty), rhs), e| {
             let span: Span = e.span();
             match (&pattern, rhs) {
-                (ValPattern::Single(name), Either2::Instance(module_name)) => {
+                (ValLhs::Single(name), Either2::Instance(module_name)) => {
                     Field::Instance(InstanceDecl {
                         name: name.clone(),
                         module_name,
@@ -948,76 +798,6 @@ fn parser2<'a>() -> impl Parser<'a, Toks<'a>, CompilationUnit, Extra<'a>> {
                 }),
             }
         });
-
-    let module_item = choice((
-        reg_decl.map(Field::Reg),
-        mem_decl.map(Field::Mem),
-        input_decl.map(Field::Input),
-        output_item,
-        always_block,
-        initial_block,
-        stage_def.map(Field::Stage),
-        type_def.map(Field::Type),
-        val_or_instance,
-        fn_def.map(Field::Fn),
-    ))
-    .boxed();
-
-    let module_items = just(Token::Semicolon)
-        .repeated()
-        .ignore_then(module_item)
-        .separated_by(just(Token::Semicolon).repeated())
-        .allow_trailing()
-        .collect::<Vec<_>>();
-
-    // ---- module / trait ----
-    let module_def = just(Token::Module)
-        .ignore_then(ident())
-        .then(just(Token::Extends).ignore_then(ident()).or_not())
-        .then(
-            just(Token::With)
-                .ignore_then(ident())
-                .repeated()
-                .collect::<Vec<_>>(),
-        )
-        .then(
-            module_items
-                .clone()
-                .delimited_by(just(Token::LBrace), just(Token::RBrace)),
-        )
-        .map_with(|(((name, extends), with_traits), items), e| ModuleDef {
-            name,
-            extends,
-            with_traits,
-            items,
-            span: e.span(),
-        });
-
-    let trait_def = just(Token::Trait)
-        .ignore_then(ident())
-        .then(
-            module_items
-                .clone()
-                .delimited_by(just(Token::LBrace), just(Token::RBrace)),
-        )
-        .map_with(|(name, items), e| TraitDef {
-            name,
-            items,
-            span: e.span(),
-        });
-
-    let item = choice((module_def.map(Item::Module), trait_def.map(Item::Trait)));
-
-    let unit = just(Token::Semicolon)
-        .repeated()
-        .ignore_then(item)
-        .separated_by(just(Token::Semicolon).repeated())
-        .allow_trailing()
-        .collect::<Vec<_>>()
-        .map(|items| CompilationUnit { items });
-
-    unit.then_ignore(just(Token::Semicolon).repeated())
-        .then_ignore(end())
 }
 
 fn mk_bin(op: BinaryOp, l: Expr, r: Expr, span: Span) -> Expr {

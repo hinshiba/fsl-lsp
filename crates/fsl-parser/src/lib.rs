@@ -3,27 +3,21 @@
 //! `fsl-lexer` のトークン列を AST に変換する．
 
 pub mod ast;
-pub mod parser;
+pub mod parsers;
 
 pub use ast::*;
-pub use parser::{ParseError, ParseResult, parse};
+pub use parsers::{ParseError, ParseResult, parse_token};
 
 pub use fsl_lexer::Span;
 
 use fsl_lexer::Token;
 
 /// ソース文字列を直接受け取るエントリポイント．
-pub fn parse_source(src: &str) -> (ParseResult, Vec<Span>) {
-    let (raw_tokens, lex_errors) = fsl_lexer::lex(src);
-    let tokens = fsl_lexer::strip_trivia(raw_tokens);
-    let result = parse(tokens, src.len());
-    (result, lex_errors)
-}
-
-/// パーサが受け取る形式に整形したトークンを得る．
-pub fn lex_for_parser(src: &str) -> (Vec<(Token, Span)>, Vec<Span>) {
-    let (raw, errs) = fsl_lexer::lex(src);
-    (fsl_lexer::strip_trivia(raw), errs)
+pub fn parse(src: &str) -> (ParseResult, Vec<Span>) {
+    let lex_result = fsl_lexer::lex(src);
+    let tokens = fsl_lexer::strip_trivia(lex_result.oks);
+    let result = parse_token(tokens, src.len());
+    (result, lex_result.errs)
 }
 
 #[cfg(test)]
@@ -31,7 +25,7 @@ mod tests {
     use super::*;
 
     fn parse_ok(src: &str) -> CompilationUnit {
-        let (result, lex_errs) = parse_source(src);
+        let (result, lex_errs) = parse(src);
         assert!(lex_errs.is_empty(), "lex errors: {:?}", lex_errs);
         assert!(
             result.errors.is_empty(),
@@ -90,7 +84,7 @@ mod tests {
             Item::Module(m) => m,
             _ => panic!(),
         };
-        assert!(matches!(m.items[0], ModuleItem::Instance(_)));
+        assert!(matches!(m.items[0], Field::Instance(_)));
     }
 
     #[test]
@@ -135,12 +129,12 @@ mod tests {
             _ => panic!(),
         };
         let f = match &m.items[0] {
-            ModuleItem::Fn(f) => f,
+            Field::Fn(f) => f,
             _ => panic!(),
         };
         let body_stmt = &f.body.stmts[0];
         let expr = match &body_stmt.kind {
-            StmtKind::Expr(e) => e,
+            Statement::Expr(e) => e,
             _ => panic!(),
         };
         match &expr.kind {
@@ -173,7 +167,7 @@ mod tests {
     #[test]
     fn add4_sample() {
         let src = include_str!("../../../fsl-sample/fsl_tutorial_samples-main/add4.fsl");
-        let (result, lex_errs) = parse_source(src);
+        let (result, lex_errs) = parse(src);
         assert!(lex_errs.is_empty(), "lex errors: {:?}", lex_errs);
         assert!(
             result.errors.is_empty(),
@@ -185,7 +179,7 @@ mod tests {
     #[test]
     fn helloworld_sample() {
         let src = include_str!("../../../fsl-sample/fsl_tutorial_samples-main/HelloWorld.fsl");
-        let (result, lex_errs) = parse_source(src);
+        let (result, lex_errs) = parse(src);
         assert!(lex_errs.is_empty(), "lex errors: {:?}", lex_errs);
         assert!(
             result.errors.is_empty(),

@@ -10,7 +10,7 @@ use clap::{Args, Parser, Subcommand};
 
 use fsl_analyzer::{Diagnostic, Severity, analyze};
 use fsl_lexer::{Span, Token, lex, strip_trivia};
-use fsl_parser::parse_source;
+use fsl_parser::parse;
 
 #[derive(Parser)]
 #[command(
@@ -137,7 +137,7 @@ fn run_lex(src: &str, strip: bool) {
 }
 
 fn run_parse(src: &str) {
-    let (result, lex_errors) = parse_source(src);
+    let (result, lex_errors) = parse(src);
     if !lex_errors.is_empty() {
         println!("lex errors ({}):", lex_errors.len());
         for span in &lex_errors {
@@ -155,7 +155,7 @@ fn run_parse(src: &str) {
 }
 
 fn run_analyze(src: &str) {
-    let (parsed, lex_errors) = parse_source(src);
+    let (parsed, lex_errors) = parse(src);
     if !lex_errors.is_empty() {
         println!("lex errors ({}):", lex_errors.len());
         for span in &lex_errors {
