@@ -3,44 +3,49 @@ use chumsky::{
     error::Rich,
     extra,
     input::ValueInput,
-    primitive::{choice, just},
+    primitive::{choice, just, todo},
     span::{SimpleSpan, Spanned},
 };
 use fsl_lexer::Token;
 
 use crate::{
     Block, CompositeDef, CompositeField, Expr, Field, FnBodyKind, FnDef, Ident, InstanceDecl,
-    OutputFnDecl, Param, PortDecl, StageDef, StageItem, StateDef, Stmt, StmtKind, ValDecl, ValLhs,
+    OutputFnDecl, Param, PortDecl, StageDef, StageItem, StateDef, ValDecl, ValLhs,
     parsers::{
+        RecBlock, RecExpr,
         atom::ident_def,
-        block::block_def,
-        expr::expr_def,
-        stmt::stmt_def,
+        block_and_expr,
         typedef::type_def,
-        valdecl::{mem_def, reg_def},
+        valdecl::{mem_def, reg_def, val_decl_def, val_tuple_def},
     },
 };
 
 /// モジュール／トレイト本体に並ぶフィールド列
+///
+/// Block と Expr の相互再帰ハンドルをここで一度だけ作って
+/// 必要な子パーサに `.clone()` で配る  各フィールドはこの一組の
+/// 再帰パーサを共有するため，深いネストでも一貫して同じパーサが走る
 pub(super) fn fields_def<'tok, I>()
 -> impl Parser<'tok, I, Vec<Spanned<Field>>, extra::Err<Rich<'tok, Token>>>
 where
     I: ValueInput<'tok, Token = Token, Span = SimpleSpan>,
 {
+    let (block, expr) = block_and_expr::<'tok, I>();
+
     let field = choice((
         // 実質的にコンストラクタ宣言
         input_def().map(Field::Input),
         output_def(),
         // フィールド変数
-        reg_def().map(Field::Reg),
-        mem_def().map(Field::Mem),
-        val_or_instance_def(),
+        reg_def(expr.clone()).map(Field::Reg),
+        mem_def(expr.clone()).map(Field::Mem),
+        val_or_instance_def(expr.clone()),
         // メソッド
-        fn_def().map(Field::Fn),
-        stage_def().map(Field::Stage),
+        fn_def(block.clone(), expr.clone()).map(Field::Fn),
+        stage_def(expr.clone()).map(Field::Stage),
         // その他ブロック
-        always_def().map(Field::Always),
-        initial_def().map(Field::Initial),
+        always_def(block.clone()).map(Field::Always),
+        initial_def(block.clone()).map(Field::Initial),
         // typeによる複合型宣言
         composite_def().map(Field::Composite),
     ));
@@ -96,27 +101,34 @@ where
 
 /// 関数定義: `[private] def [recv.]name(params)[: T] (= body | seq block | par block)`
 /// FSL チュートリアル 1.5.4 p60にrecv.の用法あり
-pub(super) fn fn_def<'tok, I>() -> impl Parser<'tok, I, FnDef, extra::Err<Rich<'tok, Token>>>
+///
+/// 再帰ハンドラを外から注入
+pub(super) fn fn_def<'tok, I>(
+    block: RecBlock<'tok, I>,
+    expr: RecExpr<'tok, I>,
+) -> impl Parser<'tok, I, FnDef, extra::Err<Rich<'tok, Token>>>
 where
     I: ValueInput<'tok, Token = Token, Span = SimpleSpan>,
 {
-    // 単一式を Block へ昇格
-    let expr_body = expr_def().map(|e| Block {
-        stmts: vec![Stmt {
-            kind: StmtKind::Expr(e),
+    // 単一式は擬似的な単文ブロックに昇格する
+    // Spanned<Statement> を作るため map_with で span を取る
+    let expr_body = expr.clone().map_with(|e, info| Block {
+        stmts: vec![Spanned {
+            inner: crate::Statement::Expr(e),
+            span: info.span(),
         }],
     });
 
     // 関数は = {block}, = expression, seq {block}, par {block}をとる
     let body = choice((
         just(Token::Eq)
-            .ignore_then(choice((block_def(), expr_body)))
+            .ignore_then(choice((block.clone(), expr_body)))
             .map(|b| (FnBodyKind::Expr, b)),
         just(Token::Seq)
-            .ignore_then(block_def())
+            .ignore_then(block.clone())
             .map(|b| (FnBodyKind::Seq, b)),
         just(Token::Par)
-            .ignore_then(block_def())
+            .ignore_then(block.clone())
             .map(|b| (FnBodyKind::Par, b)),
     ));
 
@@ -155,23 +167,29 @@ where
 }
 
 /// `always { block }`
-pub(super) fn always_def<'tok, I>() -> impl Parser<'tok, I, Block, extra::Err<Rich<'tok, Token>>>
+pub(super) fn always_def<'tok, I>(
+    block: RecBlock<'tok, I>,
+) -> impl Parser<'tok, I, Block, extra::Err<Rich<'tok, Token>>>
 where
     I: ValueInput<'tok, Token = Token, Span = SimpleSpan>,
 {
-    just(Token::Always).ignore_then(block_def())
+    just(Token::Always).ignore_then(block)
 }
 
 /// `initial { block }`
-pub(super) fn initial_def<'tok, I>() -> impl Parser<'tok, I, Block, extra::Err<Rich<'tok, Token>>>
+pub(super) fn initial_def<'tok, I>(
+    block: RecBlock<'tok, I>,
+) -> impl Parser<'tok, I, Block, extra::Err<Rich<'tok, Token>>>
 where
     I: ValueInput<'tok, Token = Token, Span = SimpleSpan>,
 {
-    just(Token::Initial).ignore_then(block_def())
+    just(Token::Initial).ignore_then(block)
 }
 
 /// stage 定義: `stage name(params) { stage_items }`
-pub(super) fn stage_def<'tok, I>() -> impl Parser<'tok, I, StageDef, extra::Err<Rich<'tok, Token>>>
+pub(super) fn stage_def<'tok, I>(
+    expr: RecExpr<'tok, I>,
+) -> impl Parser<'tok, I, StageDef, extra::Err<Rich<'tok, Token>>>
 where
     I: ValueInput<'tok, Token = Token, Span = SimpleSpan>,
 {
@@ -182,7 +200,7 @@ where
         .then(params_def())
         // ステージ本体
         .then(
-            stage_item_def()
+            stage_item_def(expr.clone())
                 .spanned()
                 .repeated()
                 .collect()
@@ -216,8 +234,9 @@ where
 /// `val pat[: T] = (new ModName | expr)`
 ///
 /// 単独識別子に対する `new` のみ `Field::Instance` に振り分け，他は `Field::Val` とする．
-pub(super) fn val_or_instance_def<'tok, I>()
--> impl Parser<'tok, I, Field, extra::Err<Rich<'tok, Token>>>
+pub(super) fn val_or_instance_def<'tok, I>(
+    expr: RecExpr<'tok, I>,
+) -> impl Parser<'tok, I, Field, extra::Err<Rich<'tok, Token>>>
 where
     I: ValueInput<'tok, Token = Token, Span = SimpleSpan>,
 {
@@ -230,12 +249,12 @@ where
         // タプル宣言と代入 型は書かない前提であることに注意
         val_tuple_def()
             .then_ignore(just(Token::Eq))
-            .then(expr_def())
-            .map(|(lhs, expr)| {
+            .then(expr.clone())
+            .map(|(lhs, e)| {
                 Field::Val(ValDecl {
                     pattern: ValLhs::Tuple(lhs),
                     ty: None,
-                    init: expr,
+                    init: e,
                 })
             }),
         // val ident =
@@ -248,7 +267,7 @@ where
                     .ignore_then(ident_def())
                     .map(ValRhs::Instance),
                 // expr
-                expr_def().map(ValRhs::Expr),
+                expr.clone().map(ValRhs::Expr),
             )))
             .map(|((ident, ty), rhs)| match rhs {
                 ValRhs::Expr(e) => Field::Val(ValDecl {
@@ -295,59 +314,30 @@ where
         .delimited_by(just(Token::LParen), just(Token::RParen))
 }
 
-/// タプル宣言 val (a, b, c) = (1, 2, 3) 式
-fn val_tuple_def<'tok, I>() -> impl Parser<'tok, I, Vec<Ident>, extra::Err<Rich<'tok, Token>>>
-where
-    I: ValueInput<'tok, Token = Token, Span = SimpleSpan>,
-{
-    ident_def()
-        // ident, ident, ..., ident
-        .separated_by(just(Token::Comma))
-        .collect()
-        // (...)
-        .delimited_by(just(Token::LParen), just(Token::RParen))
-}
-
-/// `val pat[: T] = expr` stage 内用のためインスタンス宣言がない
-fn val_decl_def<'tok, I>() -> impl Parser<'tok, I, ValDecl, extra::Err<Rich<'tok, Token>>>
-where
-    I: ValueInput<'tok, Token = Token, Span = SimpleSpan>,
-{
-    just(Token::Val)
-        .ignore_then(val_tuple_def())
-        .then(just(Token::Colon).ignore_then(type_def()).or_not())
-        .then_ignore(just(Token::Eq))
-        .then(expr_def())
-        .map(|((pattern, ty), init)| ValDecl {
-            pattern: ValLhs::Tuple(pattern),
-            ty,
-            init,
-        })
-}
-
 /// stage 本体に出現する1要素
-fn stage_item_def<'tok, I>() -> impl Parser<'tok, I, StageItem, extra::Err<Rich<'tok, Token>>>
+///
+/// `stmt` 部はまだ実装されていないため `state` および
+/// 変数系のみを扱う  `stmt` が用意されればここに追加する
+fn stage_item_def<'tok, I>(
+    expr: RecExpr<'tok, I>,
+) -> impl Parser<'tok, I, StageItem, extra::Err<Rich<'tok, Token>>>
 where
     I: ValueInput<'tok, Token = Token, Span = SimpleSpan>,
 {
     choice((
         state_def().map(StageItem::State),
-        reg_def().map(StageItem::Reg),
-        mem_def().map(StageItem::Mem),
-        val_decl_def().map(StageItem::Val),
-        stmt_def().map(StageItem::Stmt),
+        reg_def(expr.clone()).map(StageItem::Reg),
+        mem_def(expr.clone()).map(StageItem::Mem),
+        val_decl_def(expr.clone()).map(StageItem::Val),
     ))
 }
 
 /// stage 内の state 定義: `state name <stmt>`
+///
+/// 本体の `Stmt` が AST で未確定のため，シグネチャだけ確保する
 fn state_def<'tok, I>() -> impl Parser<'tok, I, StateDef, extra::Err<Rich<'tok, Token>>>
 where
     I: ValueInput<'tok, Token = Token, Span = SimpleSpan>,
 {
-    just(Token::State)
-        // ステート名
-        .ignore_then(ident_def())
-        // 本体となる文
-        .then(stmt_def())
-        .map(|(name, body)| StateDef { name, body })
+    todo()
 }

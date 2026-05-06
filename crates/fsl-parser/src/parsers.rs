@@ -5,17 +5,19 @@
 use chumsky::input::{Input, MappedInput, ValueInput};
 use chumsky::pratt::{infix, left, postfix, prefix};
 use chumsky::prelude::*;
-use chumsky::recursive::Recursive;
+use chumsky::recursive::{Indirect, Recursive};
 
 use crate::ast::{self, *};
 use crate::parsers::item::item_def;
 use fsl_lexer::{Span, SpannedToken, Token};
 
 mod atom;
+mod block;
 mod expr;
 mod field;
 mod item;
 mod typedef;
+mod valdecl;
 
 /// 構文エラー
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -38,6 +40,45 @@ fn token_proj(t: &(Token, Span)) -> (&Token, &Span) {
 type Toks<'a> =
     MappedInput<'a, Token, Span, &'a [(Token, Span)], fn(&(Token, Span)) -> (&Token, &Span)>;
 type Extra<'a> = extra::Err<Rich<'a, Token, Span>>;
+
+// Block と Expr は互いを要求する
+// `Recursive::declare()` の未定義状態相互参照を作り
+// 各サブパーサに `.clone()` で配ってから `define()` で実体を結ぶ
+//
+// `Indirect<'src, 'b, ...>` の `'b` は内部パーサの寿命  所有パーサ
+// しか流さないため `'tok = 'b` で問題ない
+
+/// `Block` 用の相互再帰ハンドル
+pub(crate) type RecBlock<'tok, I> =
+    Recursive<Indirect<'tok, 'tok, I, Block, extra::Err<Rich<'tok, Token>>>>;
+
+/// `Expr` 用の相互再帰ハンドル
+pub(crate) type RecExpr<'tok, I> =
+    Recursive<Indirect<'tok, 'tok, I, Expr, extra::Err<Rich<'tok, Token>>>>;
+
+/// Block と Expr の相互再帰パーサを宣言・定義して返す
+///
+/// 戻り値の `RecBlock` / `RecExpr` は `Clone` 可能で，
+/// そのまま `Parser` として使える
+pub(crate) fn block_and_expr<'tok, I>() -> (RecBlock<'tok, I>, RecExpr<'tok, I>)
+where
+    I: ValueInput<'tok, Token = Token, Span = SimpleSpan>,
+{
+    // 実体未定義のハンドルを作る
+    let mut block: RecBlock<'tok, I> = Recursive::declare();
+    let mut expr: RecExpr<'tok, I> = Recursive::declare();
+
+    //未定義ハンドルを配って実体パーサを構築する
+    // `block.clone()` / `expr.clone()` は内部の `Rc` を bump するだけ
+    let block_parser = block::block_def(block.clone(), expr.clone());
+    let expr_parser = expr::expr_def(block.clone(), expr.clone());
+
+    // 確定
+    block.define(block_parser);
+    expr.define(expr_parser);
+
+    (block, expr)
+}
 
 pub fn parse_token(tokens: Vec<SpannedToken>, src_end: usize) -> ParseResult {
     let eoi: Span = src_end..src_end;

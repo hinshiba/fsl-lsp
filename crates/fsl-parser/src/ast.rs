@@ -83,7 +83,7 @@ pub struct PortDecl {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OutputFnDecl {
     pub name: Ident,
-    pub params: Vec<Param>,
+    pub params: Vec<Spanned<Param>>,
     pub ret: FslType,
 }
 
@@ -99,7 +99,7 @@ pub struct FnDef {
     /// `cpu.mem_read` のように `<inst>.<name>` 形式の上書き定義に対応
     pub receiver: Option<Ident>,
     pub name: Ident,
-    pub params: Vec<Param>,
+    pub params: Vec<Spanned<Param>>,
     pub ret: Option<FslType>,
     pub body_kind: FnBodyKind,
     pub body: Block,
@@ -118,8 +118,8 @@ pub enum FnBodyKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StageDef {
     pub name: Ident,
-    pub params: Vec<Param>,
-    pub body: Vec<StageItem>,
+    pub params: Vec<Spanned<Param>>,
+    pub body: Vec<Spanned<StageItem>>,
 }
 
 /// stage 本体には state 定義，stage ローカル変数（reg/val），文が混在する．
@@ -129,14 +129,13 @@ pub enum StageItem {
     Reg(RegDecl),
     Mem(MemDecl),
     Val(ValDecl),
-    Stmt(Stmt),
+    Statement(Statement),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StateDef {
     pub name: Ident,
-    pub body: Stmt,
-    pub span: Span,
+    pub body: Statement,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -153,14 +152,14 @@ pub struct CompositeField {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ValDecl {
-    pub pattern: ValPattern,
+    pub pattern: ValLhs,
     pub ty: Option<FslType>,
     pub init: Expr,
 }
 
 /// `val x = ...` または `val (a, b, c) = ...`
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ValPattern {
+pub enum ValLhs {
     Single(Ident),
     Tuple(Vec<Ident>),
 }
@@ -199,16 +198,11 @@ pub enum FslType_ {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Block {
-    pub stmts: Vec<Stmt>,
+    pub stmts: Vec<Spanned<Statement>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Stmt {
-    pub kind: StmtKind,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum StmtKind {
+pub enum Statement {
     Val(ValDecl),
     /// `lhs := rhs` レジスタ・メモリ更新
     RegAssign(Expr, Expr),
