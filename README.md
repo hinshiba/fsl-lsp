@@ -6,13 +6,13 @@ fsl言語のlspを提供する予定
 
 ## ワークスペース構成
 
-| crate              | 役割                                       |
-| ------------------ | ------------------------------------------ |
-| `fsl-lexer`        | `logos` ベースの字句解析器                 |
-| `fsl-parser`       | `chumsky` ベースの構文解析器   |
-| `fsl-analyzer`     | シンボルテーブル構築と診断生成   |
-| `fsl-ls`           | LSP サーバ実装                    |
-| `fsl-playground`   | 上記すべての出力を試せる CLI               |
+| crate            | 役割                           |
+| ---------------- | ------------------------------ |
+| `fsl-lexer`      | `logos` ベースの字句解析器     |
+| `fsl-parser`     | `chumsky` ベースの構文解析器   |
+| `fsl-analyzer`   | シンボルテーブル構築と診断生成 |
+| `fsl-ls`         | LSP サーバ実装                 |
+| `fsl-playground` | 上記すべての出力を試せる CLI   |
 
 ## fsl-playground
 
