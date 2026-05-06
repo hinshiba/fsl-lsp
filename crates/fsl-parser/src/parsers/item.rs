@@ -9,7 +9,7 @@ use chumsky::{
 use fsl_lexer::Token;
 
 use crate::{
-    Field, Item, ModuleDef, TraitDef,
+    Item, ModuleDef, TraitDef,
     parsers::{atom, field::fields_def},
 };
 
