@@ -10,8 +10,6 @@ pub use parsers::{ParseError, ParseResult, parse_token};
 
 pub use fsl_lexer::Span;
 
-use fsl_lexer::Token;
-
 /// ソース文字列を直接受け取るエントリポイント．
 pub fn parse(src: &str) -> (ParseResult, Vec<Span>) {
     let lex_result = fsl_lexer::lex(src);
@@ -53,11 +51,11 @@ mod tests {
 "#;
         let unit = parse_ok(src);
         assert_eq!(unit.items.len(), 1);
-        let m = match &unit.items[0] {
+        let m = match &unit.items[0].inner {
             Item::Module(m) => m,
             _ => panic!("expected module"),
         };
-        assert_eq!(m.name.node, "HelloWorld");
+        assert_eq!(m.name.inner, "HelloWorld");
         assert!(m.extends.is_some());
     }
 
@@ -80,11 +78,11 @@ mod tests {
     fn instance_decl() {
         let src = "module Top extends Simulator { val s = new Sub }";
         let unit = parse_ok(src);
-        let m = match &unit.items[0] {
+        let m = match &unit.items[0].inner {
             Item::Module(m) => m,
             _ => panic!(),
         };
-        assert!(matches!(m.items[0], Field::Instance(_)));
+        assert!(matches!(m.items[0].inner, Field::Instance(_)));
     }
 
     #[test]
@@ -96,8 +94,8 @@ mod tests {
 "#;
         let unit = parse_ok(src);
         assert_eq!(unit.items.len(), 1);
-        match &unit.items[0] {
-            Item::Trait(t) => assert_eq!(t.name.node, "Inst"),
+        match &unit.items[0].inner {
+            Item::Trait(t) => assert_eq!(t.name.inner, "Inst"),
             _ => panic!(),
         }
     }
@@ -124,22 +122,22 @@ mod tests {
 }
 "#;
         let unit = parse_ok(src);
-        let m = match &unit.items[0] {
+        let m = match &unit.items[0].inner {
             Item::Module(m) => m,
             _ => panic!(),
         };
-        let f = match &m.items[0] {
+        let f = match &m.items[0].inner {
             Field::Fn(f) => f,
             _ => panic!(),
         };
         let body_stmt = &f.body.stmts[0];
-        let expr = match &body_stmt.kind {
+        let expr = match &body_stmt.inner {
             Statement::Expr(e) => e,
             _ => panic!(),
         };
-        match &expr.kind {
-            ExprKind::Binary(BinaryOp::Add, _, rhs) => match &rhs.kind {
-                ExprKind::Binary(BinaryOp::Mul, _, _) => {}
+        match &expr.inner {
+            Expr_::Binary(BinaryOp::Add, _, rhs) => match &rhs.inner {
+                Expr_::Binary(BinaryOp::Mul, _, _) => {}
                 k => panic!("rhs is not Mul: {:?}", k),
             },
             k => panic!("not Add: {:?}", k),
@@ -193,7 +191,7 @@ mod tests {
             #[test]
             fn $name() {
                 let src = include_str!($path);
-                let (result, lex_errs) = parse_source(src);
+                let (result, lex_errs) = parse(src);
                 assert!(lex_errs.is_empty(), "lex errors: {:?}", lex_errs);
                 assert!(
                     result.errors.is_empty(),

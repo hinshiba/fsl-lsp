@@ -1,4 +1,3 @@
-use line_index::LineIndex;
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer, LspService, Server};
@@ -61,39 +60,20 @@ impl LanguageServer for Backend {
      * ======================================== */
 
     async fn did_open(&self, params: DidOpenTextDocumentParams) {
-        on_change
+        let uri = params.text_document.uri;
+        let text = params.text_document.text;
+        self.on_change(uri, &text).await;
     }
 
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
-        let _ = params;
-        warn!("Got a textDocument/didChange notification, but it is not implemented");
+        // FULL sync の前提で末尾のフルテキストを採用する
+        if let Some(change) = params.content_changes.into_iter().last() {
+            self.on_change(params.text_document.uri, &change.text).await;
+        }
     }
 
-    async fn did_save(&self, param: DidSaveTextDocumentParams) {
-        self.client.log_message(MessageType::INFO, "did_save").await;
-        let test_diag = Diagnostic {
-            range: Range {
-                start: Position {
-                    line: 0,
-                    character: 0,
-                },
-                end: Position {
-                    line: 20,
-                    character: 1,
-                },
-            },
-            severity: Some(DiagnosticSeverity::WARNING),
-            code: None, // 診断の番号 E102とかつけれる
-            code_description: None,
-            source: None,
-            message: "すべてのコードは警戒しなければなりません".to_string(),
-            related_information: None,
-            tags: None,
-            data: None,
-        };
-        self.client
-            .publish_diagnostics(param.text_document.uri, vec![test_diag], None)
-            .await;
+    async fn did_save(&self, _: DidSaveTextDocumentParams) {
+        // 保存時の追加処理は現状なし
     }
 }
 

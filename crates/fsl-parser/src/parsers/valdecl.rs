@@ -1,7 +1,12 @@
 //! 変数的概念の宣言をパースするモジュール
 
 use chumsky::{
-    IterParser, Parser, error::Rich, extra, input::ValueInput, primitive::just, span::SimpleSpan,
+    IterParser, Parser,
+    error::Rich,
+    extra,
+    input::ValueInput,
+    primitive::{choice, just},
+    span::SimpleSpan,
 };
 use fsl_lexer::Token;
 
@@ -66,23 +71,29 @@ where
         })
 }
 
-/// `val pat[: T] = expr` stage 内用のためインスタンス宣言がない
+/// `val pat[: T] = expr`
+///
+/// `pat` は単独の識別子 `x` か `(x, y, ...)` のタプル
+/// インスタンス宣言は持たない  field 側で別途処理する
 pub(super) fn val_decl_def<'tok, I>(
     expr: RecExpr<'tok, I>,
 ) -> impl Parser<'tok, I, ValDecl, extra::Err<Rich<'tok, Token>>> + Clone
 where
     I: ValueInput<'tok, Token = Token, Span = SimpleSpan>,
 {
+    let lhs = choice((
+        // `(x, y, ...)`  タプル分解  曖昧さ解消のため先に試す
+        val_tuple_def().map(ValLhs::Tuple),
+        // `x`  単独識別子
+        ident_def().map(ValLhs::Single),
+    ));
+
     just(Token::Val)
-        .ignore_then(val_tuple_def())
+        .ignore_then(lhs)
         .then(just(Token::Colon).ignore_then(type_def()).or_not())
         .then_ignore(just(Token::Eq))
         .then(expr.clone())
-        .map(|((pattern, ty), init)| ValDecl {
-            pattern: ValLhs::Tuple(pattern),
-            ty,
-            init,
-        })
+        .map(|((pattern, ty), init)| ValDecl { pattern, ty, init })
 }
 
 /// タプル宣言 val (a, b, c) = (1, 2, 3) 式

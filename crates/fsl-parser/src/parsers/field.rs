@@ -3,7 +3,7 @@ use chumsky::{
     error::Rich,
     extra,
     input::ValueInput,
-    primitive::{choice, just, todo},
+    primitive::{choice, just},
     span::{SimpleSpan, Spanned},
 };
 use fsl_lexer::Token;
@@ -14,6 +14,7 @@ use crate::{
     parsers::{
         RecBlock, RecExpr,
         atom::ident_def,
+        block::stmt_def,
         block_and_expr,
         typedef::type_def,
         valdecl::{mem_def, reg_def, val_decl_def, val_tuple_def},
@@ -42,7 +43,7 @@ where
         val_or_instance_def(expr.clone()),
         // メソッド
         fn_def(block.clone(), expr.clone()).map(Field::Fn),
-        stage_def(expr.clone()).map(Field::Stage),
+        stage_def(block.clone(), expr.clone()).map(Field::Stage),
         // その他ブロック
         always_def(block.clone()).map(Field::Always),
         initial_def(block.clone()).map(Field::Initial),
@@ -188,24 +189,28 @@ where
 
 /// stage 定義: `stage name(params) { stage_items }`
 pub(super) fn stage_def<'tok, I>(
+    block: RecBlock<'tok, I>,
     expr: RecExpr<'tok, I>,
 ) -> impl Parser<'tok, I, StageDef, extra::Err<Rich<'tok, Token>>>
 where
     I: ValueInput<'tok, Token = Token, Span = SimpleSpan>,
 {
+    // ステージ本体  block 同様に文末・先頭セミコロンを任意で許容する
+    let body = stage_item_def(block.clone(), expr.clone())
+        .spanned()
+        .separated_by(just(Token::Semicolon).repeated())
+        .allow_leading()
+        .allow_trailing()
+        .collect()
+        .delimited_by(just(Token::LBrace), just(Token::RBrace));
+
     just(Token::Stage)
         // ステージ名
         .ignore_then(ident_def())
         // パラメータ列
         .then(params_def())
         // ステージ本体
-        .then(
-            stage_item_def(expr.clone())
-                .spanned()
-                .repeated()
-                .collect()
-                .delimited_by(just(Token::LBrace), just(Token::RBrace)),
-        )
+        .then(body)
         .map(|((name, params), body)| StageDef { name, params, body })
 }
 
@@ -316,28 +321,36 @@ where
 
 /// stage 本体に出現する1要素
 ///
-/// `stmt` 部はまだ実装されていないため `state` および
-/// 変数系のみを扱う  `stmt` が用意されればここに追加する
+/// `state` 定義  `reg`/`mem`/`val` 宣言  およびステージ内の制御文が混在する
 fn stage_item_def<'tok, I>(
+    block: RecBlock<'tok, I>,
     expr: RecExpr<'tok, I>,
 ) -> impl Parser<'tok, I, StageItem, extra::Err<Rich<'tok, Token>>>
 where
     I: ValueInput<'tok, Token = Token, Span = SimpleSpan>,
 {
     choice((
-        state_def().map(StageItem::State),
+        state_def(block.clone(), expr.clone()).map(StageItem::State),
         reg_def(expr.clone()).map(StageItem::Reg),
         mem_def(expr.clone()).map(StageItem::Mem),
         val_decl_def(expr.clone()).map(StageItem::Val),
+        // それ以外は単独の文として stage に組み込む
+        stmt_def(block.clone(), expr.clone()).map(StageItem::Statement),
     ))
 }
 
 /// stage 内の state 定義: `state name <stmt>`
-///
-/// 本体の `Stmt` が AST で未確定のため，シグネチャだけ確保する
-fn state_def<'tok, I>() -> impl Parser<'tok, I, StateDef, extra::Err<Rich<'tok, Token>>>
+fn state_def<'tok, I>(
+    block: RecBlock<'tok, I>,
+    expr: RecExpr<'tok, I>,
+) -> impl Parser<'tok, I, StateDef, extra::Err<Rich<'tok, Token>>>
 where
     I: ValueInput<'tok, Token = Token, Span = SimpleSpan>,
 {
-    todo()
+    just(Token::State)
+        // ステート名
+        .ignore_then(ident_def())
+        // 本体  通常は par/seq/any/alt ブロック文だが任意の文を許容する
+        .then(stmt_def(block, expr))
+        .map(|(name, body)| StateDef { name, body })
 }
