@@ -1,12 +1,37 @@
+//! FSL Language Server エントリポイント
+//!
+//! tower-lsp 上にハンドラを登録する．
+//! 文書状態は `Backend.docs` にキャッシュし，
+//! goto_definition / hover / completion はキャッシュを参照する．
+
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use fsl_analyzer::AnalysisResult;
+use line_index::LineIndex;
+use tokio::sync::RwLock;
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer, LspService, Server};
 
+mod completion;
+mod definition;
+mod hover;
 mod on_change;
+mod pos;
 
-#[derive(Debug)]
-struct Backend {
-    client: Client,
+/// 文書ごとの解析キャッシュ
+pub struct DocumentState {
+    pub text: String,
+    pub line_index: LineIndex,
+    pub analysis: AnalysisResult,
+}
+
+/// LSP サーバ本体
+pub struct Backend {
+    pub client: Client,
+    /// URI ごとの最新解析状態
+    pub docs: Arc<RwLock<HashMap<Url, DocumentState>>>,
 }
 
 #[tower_lsp::async_trait]
@@ -24,7 +49,12 @@ impl LanguageServer for Backend {
                     },
                 )),
                 hover_provider: Some(HoverProviderCapability::Simple(true)),
-                completion_provider: Some(CompletionOptions::default()),
+                completion_provider: Some(CompletionOptions {
+                    resolve_provider: Some(false),
+                    trigger_characters: Some(vec![".".into()]),
+                    ..Default::default()
+                }),
+                definition_provider: Some(OneOf::Left(true)),
                 ..Default::default()
             },
             ..Default::default()
@@ -41,18 +71,21 @@ impl LanguageServer for Backend {
         Ok(())
     }
 
-    async fn completion(&self, _: CompletionParams) -> Result<Option<CompletionResponse>> {
-        Ok(Some(CompletionResponse::Array(vec![
-            CompletionItem::new_simple("Hello".to_string(), "Some detail".to_string()),
-            CompletionItem::new_simple("Bye".to_string(), "More detail".to_string()),
-        ])))
+    /* ================ クエリ系 ================ */
+
+    async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
+        Ok(self.handle_completion(params).await)
     }
 
-    async fn hover(&self, _: HoverParams) -> Result<Option<Hover>> {
-        Ok(Some(Hover {
-            contents: HoverContents::Scalar(MarkedString::String("You're hovering!".to_string())),
-            range: None,
-        }))
+    async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
+        Ok(self.handle_hover(params).await)
+    }
+
+    async fn goto_definition(
+        &self,
+        params: GotoDefinitionParams,
+    ) -> Result<Option<GotoDefinitionResponse>> {
+        Ok(self.handle_goto_definition(params).await)
     }
 
     /* ================ 変更系 ================
@@ -82,6 +115,9 @@ async fn main() {
     let stdin = tokio::io::stdin();
     let stdout = tokio::io::stdout();
 
-    let (service, socket) = LspService::new(|client| Backend { client });
+    let (service, socket) = LspService::new(|client| Backend {
+        client,
+        docs: Arc::new(RwLock::new(HashMap::new())),
+    });
     Server::new(stdin, stdout, socket).serve(service).await;
 }

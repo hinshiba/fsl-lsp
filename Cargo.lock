@@ -253,6 +253,7 @@ dependencies = [
 name = "fsl-analyzer"
 version = "0.1.0"
 dependencies = [
+ "chumsky",
  "fsl-parser",
 ]
 

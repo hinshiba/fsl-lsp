@@ -6,3 +6,4 @@ authors.workspace = true
 
 [dependencies]
 fsl-parser = { path = "../fsl-parser" }
+chumsky = "0.12.0"

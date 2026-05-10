@@ -12,6 +12,7 @@ tokio = { version = "1.52", features = [
     "rt-multi-thread",
     "io-std",
     "io-util",
+    "sync",
 ] }
 tokio-macros = { version = "2.7" }
 line-index = "0.1.2"

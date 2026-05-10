@@ -132,22 +132,6 @@ Span -> 行番号が必要
 - lsp-textdocument
 - line-index
 
-### シンボルテーブル
-
-```rust
-enum SymbolKind {
-    Module,
-    Trait,
-    Register { width: usize },
-    Memory { elem_type: Type, size: usize },
-    InputPort { ty: Type },
-    OutputPort { ty: Type },
-    Function { params: Vec<Type>, ret: Type },
-    Stage { params: Vec<Type> },
-    Instance { module_name: String },
-    Val { ty: Type },
-}
-```
 
 ### 診断ポリシー
 
