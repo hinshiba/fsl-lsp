@@ -3,3 +3,10 @@ dist
 node_modules
 .vscode-test/
 *.vsix
+
+
+# Added by cargo
+
+/target
+fsl_tutorial_samples-main
+extension/fsl-lsp-code/bin/*

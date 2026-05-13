@@ -1,27 +1,52 @@
-# fsl-lsp README
+# fsl-lsp
 
+fsl言語の言語サーバーの実装
 
-## Features
+## ワークスペース構成
 
-fsl lsp
+| crate            | 役割                           |
+| ---------------- | ------------------------------ |
+| `fsl-lexer`      | `logos` ベースの字句解析器     |
+| `fsl-parser`     | `chumsky` ベースの構文解析器   |
+| `fsl-analyzer`   | シンボルテーブル構築と診断生成 |
+| `fsl-ls`         | LSP サーバ実装                 |
+| `fsl-playground` | 上記すべての出力を試せる CLI   |
 
-## Extension Settings
+## fsl-playground
 
-todo
+各クレートの出力を一括で試すための CLI です．`fsl-sample/` 配下のサンプル，または任意の `.fsl` ファイルを入力にできます．
 
-Include if your extension adds any VS Code settings through the `contributes.configuration` extension point.
+### サブコマンド
 
-For example:
+```sh
+# 利用可能なサンプル一覧
+cargo run -p fsl-playground -- samples
 
-This extension contributes the following settings:
+# 字句解析（--strip-trivia でコメント・改行を除去）
+cargo run -p fsl-playground -- lex --sample HelloWorld --strip-trivia
 
-* `myExtension.enable`: Enable/disable this extension.
-* `myExtension.thing`: Set to `blah` to do something.
+# 構文解析（AST を pretty print）
+cargo run -p fsl-playground -- parse --sample HelloWorld
 
-## Known Issues
+# 意味解析（トップレベルシンボルと診断）
+cargo run -p fsl-playground -- analyze --sample HelloWorld
 
-## Release Notes
+# LSP クレートの状態
+cargo run -p fsl-playground -- lsp
 
-### 0.1.0
+# 全段階を順に実行
+cargo run -p fsl-playground -- all --sample HelloWorld
+```
 
-Release for simple highlight.
+### 入力指定
+
+サンプル名（`-s`/`--sample`）かファイルパスのどちらかを指定します．
+
+```sh
+# サンプル名（fsl-sample/ 配下を再帰的に解決．拡張子 .fsl は省略可）
+cargo run -p fsl-playground -- parse --sample alu32-main/alu32
+cargo run -p fsl-playground -- parse -s HelloWorld
+
+# ファイルパス直接指定
+cargo run -p fsl-playground -- parse path/to/file.fsl
+```

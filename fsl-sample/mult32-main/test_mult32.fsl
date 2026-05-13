@@ -1,0 +1,79 @@
+/* (test_mult32.fsl) */
+
+module test_mult32 extends Simulator {
+  val m0 = new mult32 // mult32モジュールのインスタンス化
+  reg count: Bit(16)
+  reg   n_ok: Bit(12) // O.K.の数をカウントするカウンタ
+  reg n_fail: Bit(12) // fail の数をカウントするカウンタ
+  mem [Bit(128)] pat(2000) // パターン用メモリ
+  initial {
+    _readmemb("test_mult32.pat", pat) // パターンファイルの読み込み
+    n_ok := 0    // カウンタのリセット
+    n_fail := 0  // カウンタのリセット
+  }
+  always {
+    count := count + 1
+    if (count == 1) generate test() // テストの開始
+    if (count == 100000) stop() // 10,000サイクルで停止
+  }
+  private def stop(): Unit = { // 終了時の処理
+    _display("ok: %d, fail: %d", n_ok, n_fail) 
+    _finish("%d: bye.", count)
+  }
+  stage test() {  // テスト
+    reg ii: Bit(12) // パターンのインデックス
+    reg aa: Bit(32) 
+    reg bb: Bit(32)
+    reg oo: Bit(64)
+
+    state st0 par { 
+      ii := 0   // パターン用インデックの初期化
+      goto st2  
+    }
+    state st1 par { // 終了するかの判定をするステート
+      if (ii < 2000) goto st2  // 2,000パターンで終了
+      else par {
+	goto st0
+	stop()  // シミュレーションの終了処理
+	finish
+      }
+    }
+    state st2 par { // パターンメモリからテスト用データを読み込む
+      val p = pat(ii)
+      val a = p(127, 96) // 32-bit 
+      val b = p(95, 64)  // 32-bit
+      val o = p(63, 0)   // 64-bit   期待する出力値
+      m0.mult(a, b)  // インスタンスの関数起動
+      if (m0.en.isRunning) par { // 結果が出力されているか？
+	check(ii, a, b, m0.out, o) // チェック用の関数を起動
+	ii := ii + 1 // パターンインデックスを更新
+	goto st1     // 終了チェックへ
+      } else par { // 結果がまだ出力されていないときは，出力されるのを待つ
+	aa := a
+	bb := b
+	oo := o
+	goto st3
+      }
+    }
+    state st3 par { // 結果が出力されるのを待つステート
+      if (m0.en.isRunning) par { // 結果が出力されているか？
+	check(ii, aa, bb, m0.out, oo) // チェック用の関数を起動
+	ii := ii + 1 // パターンインデックスを更新
+	goto st1     // 終了チェックへ
+      }
+    }
+  } // stage test()
+  private def check(i: Bit(12), a: Bit(32), b: Bit(32), out: Bit(64), o: Bit(64)): Unit = {
+    if (out == o) par { // 出力が期待する出力値と一致するか？
+      _display("%d %x %x - %x ... ok", 
+	       i, a, b, out)
+      n_ok := n_ok + 1
+    } else par { // 一致しない場合
+      _display("%d %x %x - %x %x... fail", 
+	       i, a, b, out, o)
+      n_fail := n_fail + 1
+    }
+  } // private def check
+} // module test_mult32
+
+/* End of file (test_mult32.fsl) */

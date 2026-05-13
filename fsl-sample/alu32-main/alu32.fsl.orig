@@ -1,0 +1,30 @@
+/* (alu32.fsl) */
+
+module alu32 {
+  input         a: Bit(32)
+  input         b: Bit(32)
+  output      out: Bit(32)
+  output overflow: Bit(1)
+  output     zero: Bit(1)
+
+  def op_add(a, b): Unit = {
+    ...
+  }
+  def op_sub(a, b): Unit = {
+    ...
+  }
+  def op_and(a, b): Unit = {
+    ...
+  }
+  def op_or(a, b): Unit = {
+    ...
+  }
+  def op_xor(a, b): Unit = {
+    ...
+  }
+  def op_nor(a, b): Unit = {
+    ...
+  }
+} // module alu32
+
+/* End of file (alu32.fsl) */
