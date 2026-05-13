@@ -1,15 +1,23 @@
 import { commands, window, ExtensionContext } from "vscode";
 import { LanguageClient, LanguageClientOptions, ServerOptions } from "vscode-languageclient/node";
+import * as path from "path";
 
 /** 単一のモジュール内でのクライアント */
 let client: LanguageClient | undefined;
 
+/** 拡張機能ルートからのサーバ実行ファイル相対パス（プラットフォーム別） */
+const binRelPath: { [key: string]: string } = {
+    "win32": path.join("bin", "win", "fsl-ls.exe"),
+    "linux": path.join("bin", "linux", "fsl-ls"),
+};
+
 /**
  * 新しいクライアントを作成する．
+ * @param serverPath サーバ実行ファイルの絶対パス
  * @returns 作成されたクライアント．失敗した場合は`undefined`
  */
-function newLanguageClient(): LanguageClient | undefined {
-    const serverOptions: ServerOptions = { command: "D:\\dev\\_univ\\g3t1\\exA_tool\\fsl-lsp\\target\\debug\\fsl-ls.exe" };
+function newLanguageClient(serverPath: string): LanguageClient | undefined {
+    const serverOptions: ServerOptions = { command: serverPath };
     const clientOptions: LanguageClientOptions = {
         documentSelector: [
             {
@@ -28,11 +36,11 @@ function newLanguageClient(): LanguageClient | undefined {
 
 /**
  * 言語サーバーを再起動する．起動していない場合は起動する．
- * @param client クライアント
+ * @param serverPath サーバ実行ファイルの絶対パス
  */
-async function restartLanguageServer(): Promise<void> {
+async function restartLanguageServer(serverPath: string): Promise<void> {
     if (client === undefined) {
-        client = newLanguageClient();
+        client = newLanguageClient(serverPath);
         if (client === undefined) {
             throw new Error("Failed to create language client");
         }
@@ -43,9 +51,16 @@ async function restartLanguageServer(): Promise<void> {
 }
 
 export async function activate(context: ExtensionContext) {
-    await restartLanguageServer();
+    const relPath = binRelPath[process.platform];
+    if (relPath === undefined) {
+        window.showErrorMessage(`Unsupported platform: ${process.platform}`);
+        return;
+    }
+    const serverPath = context.asAbsolutePath(relPath);
+
+    await restartLanguageServer(serverPath);
     context.subscriptions.push(
-        commands.registerCommand("fsl.restartLanguageServer", restartLanguageServer),
+        commands.registerCommand("fsl.restartLanguageServer", () => restartLanguageServer(serverPath)),
         { dispose: () => client?.stop() }
     );
 }

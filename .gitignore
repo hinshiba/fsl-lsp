@@ -9,3 +9,4 @@ node_modules
 
 /target
 fsl_tutorial_samples-main
+extension/fsl-lsp-code/bin/*

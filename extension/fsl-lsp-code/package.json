@@ -2,9 +2,9 @@
   "name": "fsl-lsp-code",
   "displayName": "fsl-lsp-code",
   "description": "fsl言語サービスを提供",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "engines": {
-    "vscode": "^1.118.0"
+    "vscode": "^1.116.0"
   },
   "categories": [
     "Programming Languages"
@@ -35,6 +35,9 @@
   },
   "scripts": {
     "vscode:prepublish": "pnpm run package",
+    "prepac": "pnpm run copy-bin",
+    "pac": "vsce package --no-dependencies",
+    "copy-bin": "node scripts/copy-bin.ts",
     "compile": "pnpm run check-types && pnpm run lint && node esbuild.js",
     "watch": "npm-run-all -p watch:*",
     "watch:esbuild": "node esbuild.js --watch",
@@ -50,9 +53,10 @@
   "devDependencies": {
     "@types/mocha": "^10.0.10",
     "@types/node": "22.x",
-    "@types/vscode": "^1.118.0",
+    "@types/vscode": "^1.116.0",
     "@vscode/test-cli": "^0.0.12",
     "@vscode/test-electron": "^2.5.2",
+    "@vscode/vsce": "^3.9.1",
     "esbuild": "^0.27.3",
     "eslint": "^9.39.3",
     "npm-run-all": "^4.1.5",
