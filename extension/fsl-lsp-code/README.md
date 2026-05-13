@@ -1,5 +1,6 @@
 # fsl-lsp README
 
+VSCodeのためのFSLの言語サポート
 
 ## Features
 
@@ -22,6 +23,15 @@ This extension contributes the following settings:
 
 ## Release Notes
 
+### 0.1.1
+
+- 言語サーバー機能の追加
+- 一般的な構文エラーの検出とそのdiagnostics
+- 未宣言シンボルと再代入に関するdiagnostics
+- 簡易的なhoverによる追加情報
+- 限定的なgoto definition
+- 基本的なcompletion
+
 ### 0.1.0
 
-Release for simple highlight.
+- ハイライトの追加

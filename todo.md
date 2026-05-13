@@ -1,37 +1,56 @@
+## 0.2.0目標
+
+- astの構造修正
+  - 式とブロックについて
+    - 資料で文とされていたものもUnitを返す式
+    - {}も最後の式の結果を返す式と解釈
+    - defのbodyは式をとると解釈できるのでは
+  - 型と記録素子の2情報が必要では
+    - 記録素子: 端子, レジスタ, メモリ
+      - 端子: input, output, valによる宣言
+      - レジスタ: regによる宣言
+      - メモリ: memによる宣言
+    - レジスタとメモリは `:=` による代入が必要
+    - それ以外は `=` 
+  - Bit(n)は定数で良い
+
+- エラー耐性
+  - パースエラーが発生しても，パースを続行するし診断も行う
+
+- 重要バグ修正
+  - Bit(n).zero が未宣言シンボル扱いされる問題
+  - _readmemb が未宣言シンボル扱いされる問題
+  - match式でのarmのパースエラー
+    - case 0b000 => reg0 = in;に対して，found 'Eq' at 989..990 expected 'LParen', 'Dot', 'Hash', 'Star` ... etc
+  - 出力関数が複数ある場合にエラーとなる
+  - any, altへのハイライト追加
+
+- 診断機能追加
+  - 未使用シンボルに対する警告
+  - 転送先に対する演算子のエラー
+
+- 補完
+  - 関数の引数の宣言には入出力端子しか書けない
+  - 関数の内部においてinputは引数のみ
+    - モジュールのinput端子と重複提案しないように
 
 
-  infix(left(8), just(Token::Plus),
-      |l, _, r, e: &mut chumsky::input::MapExtra<'_, '_, _, _>| mk_bin(BinaryOp::Add, l, r, e.span())),
-  infix(left(8), just(Token::Minus),
-      |l, _, r, e: &mut chumsky::input::MapExtra<'_, '_, _, _>| mk_bin(BinaryOp::Sub, l, r, e.span())),
+## 0.3.0目標
 
-  ヘルパーで
+- 型推論によるインレイヒント
 
-  fn binop_l(prec: u32, tok: Token, op: BinaryOp) -> impl ... {
-      infix(left(prec), just(tok),
-          move |l, _, r, e: &mut MapExtra<_,_>| mk_bin(op, l, r, e.span()))
-  }
-  fn unop(prec: u32, tok: Token, op: UnaryOp) -> impl ... {
-      prefix(prec, just(tok),
-          move |_, rhs, e: &mut MapExtra<_,_>| Expr {
-              kind: ExprKind::Unary(op, Box::new(rhs)), span: e.span() })
-  }
+- val newによる別ファイルのモジュールの取得
 
-  としてテーブルを
+- 診断機能追加
+  - 型の不一致に対するエラー
+  - モジュールに対するinput, output制約違反
+  - モジュールの実装されている関数
+  - モジュールのprivate違反
+  
+- hover
+  - 型情報 特にbitサイズ
 
-  .pratt((
-      postfix(12, call_args, |lhs, args, e| spanned(ExprKind::Call(Box::new(lhs), args), e.span())),
-      postfix(12, dot_ident, |lhs, n,    e| spanned(ExprKind::Field(Box::new(lhs), n),    e.span())),
-      unop(11, Token::Tilde, UnaryOp::BitNot),
-      unop(11, Token::Bang,  UnaryOp::LogNot),
-      unop(11, Token::Minus, UnaryOp::Neg),
-      unop(11, Token::Pipe,  UnaryOp::RedOr),
-      binop_l(10, Token::Hash,       BinaryOp::SignExt),
-      binop_l(9,  Token::Star,       BinaryOp::Mul),
-      binop_l(8,  Token::Plus,       BinaryOp::Add),
-      binop_l(8,  Token::Minus,      BinaryOp::Sub),
-      // ... 1行ずつ
-      binop_l(1,  Token::PipePipe,   BinaryOp::LogOr),
-  ))
-
-  200行→30行に圧縮
+- 補完
+  - newに対する他モジュールの補完
+  - インスタンスに対するoutput, defの補完
+  
