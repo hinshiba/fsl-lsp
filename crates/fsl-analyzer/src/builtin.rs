@@ -9,7 +9,7 @@ pub struct Builtins {
 }
 
 static BUILTINS: Builtins = Builtins {
-    names: &["_display", "_finish", "_time"],
+    names: &["_display", "_finish", "_time", "_readmemb"],
 };
 
 /// グローバル `Builtins` を返す
