@@ -1,0 +1,168 @@
+/* (p32DecodeUnit.fsl) */
+
+module p32DecodeUnit extends p32Opcode with p32ExceptionCauseCode {
+  input       inst: Bit(32)
+  input     a_data: Bit(32)
+  input     b_data: Bit(32)
+  input         pc: Bit(32)
+  output     a_out: Bit(32)
+  output     b_out: Bit(32)
+  output  dest_out: Bit(5)
+  output shamt_out: Bit(5)
+  output   mdr_out: Bit(32)
+  output    pc_out: Bit(32)
+  output   epc_out: Bit(32)
+  output cause_out: Bit(4)
+  output funct_out: Bit(6)
+
+  output def update_pc(pc_out)
+  output def update_mdr(mdr_out)
+  output def set_epc(epc_out)
+  output def set_cause(cause_out)
+  output def exception()
+  output def undefined_inst()
+
+  val pc_add = new add32
+
+  val EXCEPTION_HANDLER: Bit(32) = 0x8000_0080
+
+  def decode(inst, a_data, b_data, pc): Unit = par {
+    val opcode    = inst(31, 26)
+    val rt        = inst(20, 16)
+    val rd        = inst(15, 11)
+    val immediate = inst(15, 0)
+    val funct     = inst(5, 0)
+    val isSPECIAL = (opcode == SPECIAL)
+    val isADDI    = (opcode == ADDI)
+    val isADDIU   = (opcode == ADDIU)
+    val isANDI    = (opcode == ANDI)
+    val isORI     = (opcode == ORI)
+    val isXORI    = (opcode == XORI)
+    val isLUI     = (opcode == LUI)
+    val isSLTI    = (opcode == SLTI)
+    val isSLTIU   = (opcode == SLTIU)
+    val isBEQ     = (opcode == BEQ)
+    val isBNE     = (opcode == BNE)
+    val isSB      = (opcode == SB)
+    val isSW      = (opcode == SW)
+    val isLB      = (opcode == LB)
+    val isLW      = (opcode == LW)
+    val isSHIFT_I = (isSPECIAL && 
+		     ((funct == SLL) || (funct == SRL) || (funct == SRA)))
+    val isSHIFT_V = (isSPECIAL && 
+		     ((funct == SLLV) || (funct == SRLV) || (funct == SRAV)))
+    val isSHIFT   = (isSHIFT_I || isSHIFT_V)
+    val isBR      = (isBEQ || isBNE)
+    val isLOAD    = (isLB || isLW)
+    val isSTORE   = (isSB || isSW)
+    // immediate value is sign extended
+    val immSignExt   = (isADDI || isADDIU || isSLTI || isSLTIU)
+    // immediate value is zero extended
+    val immZeroExt   = (isANDI || isORI || isXORI) 
+
+    any {
+      isSPECIAL: par {
+        funct_out = funct
+        // shift operations 
+        shamt_out = if (isSHIFT_V) a_data(4, 0) // sllv, srlv, srav は $rtから
+              else if (isSHIFT_I) inst(10, 6) // sll, srl, sra は即値
+              else 0b00000
+        any {
+          (funct == JR): par {
+            dest_out = 0b00000
+            a_out    = a_data
+            b_out    = 0x00000000
+            update_pc(a_data) // rs
+          } // funct == JR
+          (funct == JALR): par {
+            dest_out = rd // rd
+            a_out    = 0x00000000
+            b_out    = pc
+            update_pc(a_data) // rs
+          } // funct == JALR
+          (funct == SYSCALL): par {
+            dest_out = 0b00000
+            a_out    = 0x00000000
+            b_out    = 0x00000000
+            update_pc(EXCEPTION_HANDLER)
+            set_epc(pc - 4)          // set epc register to current pc
+            set_cause(CAUSE_SYS) // set cause register
+            exception()
+          } // funct == SYSCALL
+          else: par {
+            dest_out = rd   // rd
+            a_out = a_data
+            b_out = b_data
+          }
+        }
+      } // isSPECIAL
+      else: par {
+        funct_out = 0b000000
+        shamt_out = 0b00000
+        any {
+          isLOAD: par {
+            dest_out = rt // rt
+            a_out    = a_data
+            b_out    = 32 # immediate   // immediate
+          } // isLOAD
+          isSTORE: par {
+            dest_out = 0b00000
+            update_mdr(b_data)        // data to store
+            a_out    = a_data
+            b_out    = 32 # immediate   // immediate 
+          } // isSTORE
+          immSignExt: par { // immediate value must be sign extended
+            dest_out = rt             // rt
+            a_out    = a_data
+            b_out    = 32 # immediate   // immediate
+          } // ID_I_SE (sign extend)
+          immZeroExt: par { // immediate value must be zero extended
+            dest_out = rt                  // rt
+            a_out    = a_data
+            b_out    = Bit(16).zero ++ immediate        // immediate
+          } // D_I_ZE (zero extend)
+          isLUI: par { // load upper immediate
+            dest_out = rt  // rt
+            a_out    = 0x00000000
+            b_out    = Bit(16).zero ++ immediate       // immediate
+          } // isLUI
+          isBR: par { // branch (BEQ/BNE)
+            dest_out = 0b00000
+            a_out    = a_data
+            b_out    = 32 # immediate   // sign extended immediate value
+            any { 
+              ((isBEQ && (a_data == b_data)) ||
+              (isBNE && (a_data != b_data))): par {
+                val next_pc = pc_add.add(pc, 32 # (immediate ++ 0b00), 0b0).sum
+                update_pc(next_pc)
+              }
+            }
+          } // ID_BR
+          (opcode == J): par { // jump
+            dest_out = 0b00000
+            a_out    = a_data
+            b_out    = 0x00000000
+            update_pc(pc(31, 28) ++ inst(25,0) ++ 0b00) // branch target addr.
+          }
+          (opcode == JAL): par { // jump and link
+            dest_out = 0b11111 // $ra ($31)
+            a_out    = 0x00000000
+            b_out    = pc
+            update_pc(pc(31, 28) ++ inst(25,0) ++ 0b00) // jump target addr.
+          }
+          else: par { // undefined instructions
+            dest_out = 0b00000
+            a_out    = 0xffffffff
+            b_out    = 0xffffffff
+            update_pc(EXCEPTION_HANDLER)
+            set_epc(pc - 4)
+            set_cause(CAUSE_RI) // reserved instruction exception
+            undefined_inst()
+          }
+        }
+      }
+    } // any
+  } // def decode(inst, a_data, b_data, pc): Unit
+} // module p32DecodeUnit extends p32Opcode with p32ExceptionCauseCode
+
+/* End of file (p32DecodeUnit.fsl) */

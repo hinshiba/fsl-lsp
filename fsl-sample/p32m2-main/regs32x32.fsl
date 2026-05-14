@@ -1,0 +1,54 @@
+/* (regs32x32.fsl) */
+
+module regs32x32 {
+  input      in: Bit(32)
+  input in_addr: Bit(5)
+  input  a_addr: Bit(5)
+  input  b_addr: Bit(5)
+  output      a: Bit(32)
+  output      b: Bit(32)
+
+  val regs0 = new regs32x8
+  val regs1 = new regs32x8
+  val regs2 = new regs32x8
+  val regs3 = new regs32x8
+
+  def read_a(a_addr): Unit = {
+    a = if (a_addr == 0b00000) Bit(32).zero else a_addr(4, 3) match {
+      case 0b00 => regs0.read_a(a_addr(2, 0)).a;
+      case 0b01 => regs1.read_a(a_addr(2, 0)).a;
+      case 0b10 => regs2.read_a(a_addr(2, 0)).a;
+      case 0b11 => regs3.read_a(a_addr(2, 0)).a;
+    }
+  }
+
+  def read_b(b_addr): Unit = {
+    b = if (b_addr == 0b00000) Bit(32).zero else b_addr(4, 3) match {
+      case 0b00 => regs0.read_b(b_addr(2, 0)).b;
+      case 0b01 => regs1.read_b(b_addr(2, 0)).b;
+      case 0b10 => regs2.read_b(b_addr(2, 0)).b;
+      case 0b11 => regs3.read_b(b_addr(2, 0)).b;
+    }
+  }
+
+  def write(in_addr, in): Unit = {
+    in_addr(4, 3) match {
+      case 0b00 => regs0.write(in_addr(2, 0), in);
+      case 0b01 => regs1.write(in_addr(2, 0), in);
+      case 0b10 => regs2.write(in_addr(2, 0), in);
+      case 0b11 => regs3.write(in_addr(2, 0), in);
+    }
+  }
+
+  def clear(): Unit = {
+    par {
+      regs0.clear();
+      regs1.clear();
+      regs2.clear();
+      regs3.clear();
+    }
+  }
+}
+
+/* End of file (regs32x32.fsl) */
+

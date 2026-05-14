@@ -31,13 +31,13 @@ where
         let bit_arg = {
             let int_lit = select! {
                 Token::IntLit(s) = e => Spanned {
-                    inner: Expr_::Int(s),
+                    inner: Expr_::IntLit(s),
                     span: e.span(),
                 },
             };
             let path = select! {
                 Token::Ident(s) = e => Spanned {
-                    inner: Expr_::Path(Spanned { inner: s, span: e.span() }),
+                    inner: Expr_::Variable(Spanned { inner: s, span: e.span() }),
                     span: e.span(),
                 },
             };
@@ -52,12 +52,18 @@ where
             .spanned();
 
         let array_ty = select! { Token::Ident(s) if s == "Array" => () }
-            .ignore_then(ty.clone().delimited_by(just(Token::LBracket), just(Token::RBracket)))
+            .ignore_then(
+                ty.clone()
+                    .delimited_by(just(Token::LBracket), just(Token::RBracket)),
+            )
             .map(|inner: FslType| FslType_::Array(Box::new(inner)))
             .spanned();
 
         let list_ty = select! { Token::Ident(s) if s == "List" => () }
-            .ignore_then(ty.clone().delimited_by(just(Token::LBracket), just(Token::RBracket)))
+            .ignore_then(
+                ty.clone()
+                    .delimited_by(just(Token::LBracket), just(Token::RBracket)),
+            )
             .map(|inner: FslType| FslType_::List(Box::new(inner)))
             .spanned();
 

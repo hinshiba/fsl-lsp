@@ -1,0 +1,136 @@
+/* (p32ExecUnit.fsl) */
+
+module p32ExecUnit extends p32Opcode {
+  input         op: Bit(6)
+  input      funct: Bit(6)
+  input      shamt: Bit(5)
+  input          a: Bit(32)
+  input          b: Bit(32)
+  input      mdata: Bit(32)
+  output    result: Bit(32)
+  output mdata_out: Bit(32)
+  output store_loc: Bit(4)
+
+  val alu   = new alu32
+  val shift = new shift32
+
+  val isSPECIAL = (op == SPECIAL)
+  val isBJ      = ((op == J) || (op == JAL) || (op == BEQ) || (op == BNE))
+  val isADD     = ((op == ADDI) || (isSPECIAL && (funct == ADD)))
+  val isADDU    = ((op == ADDIU) || (isSPECIAL && (funct == ADDU)))
+  val isSUB     = (isSPECIAL && (funct == SUB))
+  val isSUBU    = (isSPECIAL && (funct == SUBU))
+  val isAND     = ((op == ANDI) || (isSPECIAL && (funct == AND)))
+  val isOR      = ((op == ORI) || (isSPECIAL && (funct == OR)))
+  val isXOR     = ((op == XORI) || (isSPECIAL && (funct == XOR)))
+  val isNOR     = (isSPECIAL && (funct == NOR))
+  val isSLL     = (isSPECIAL && ((funct == SLL) || (funct == SLLV)))
+  val isSRL     = (isSPECIAL && ((funct == SRL) || (funct == SRLV)))
+  val isSRA     = (isSPECIAL && ((funct == SRA) || (funct == SRAV)))
+  val isLUI     = (op == LUI)
+  val isSLT     = ((op == SLTI) ||  (isSPECIAL && (funct == SLT)))
+  val isSLTU    = ((op == SLTIU) || (isSPECIAL && (funct == SLTU)))
+      
+  val isSB      = (op == SB)
+  val isSW      = (op == SW)
+  val isLB      = (op == LB)
+  val isLW      = (op == LW)
+  val isLOAD    = (isLB || isLW)
+  val isSTORE   = (isSB || isSW)
+  val isSET     = (isSLT || isSLTU)
+  val isSHIFT   = (isSLL || isSRL || isSRA)
+  val isALU     = (isADD || isADDU || isSUB || isSUBU || 
+		    isAND || isOR || isXOR || isNOR)
+ 
+  // multiply/division
+  val isMFHI    = (isSPECIAL && (funct == MFHI))  // move from hi
+  val isMFLO    = (isSPECIAL && (funct == MFLO))  // move from lo
+  val isMULT    = (isSPECIAL && (funct == MULT))  // multiply
+  val isMULTU   = (isSPECIAL && (funct == MULTU)) // multiply unsigned
+  val isDIV     = (isSPECIAL && (funct == DIV))   // division
+  val isDIVU    = (isSPECIAL && (funct == DIVU))  // division unsigned
+  val isMULTIPLIER = (isMULT || isMULTU)
+  val isDIVIDER = (isDIV || isDIVU)
+  val isMOVE    = (isMFHI || isMFLO)
+
+  private def ex_alu(a: Bit(32), b: Bit(32)): Unit = any {
+    isADD:  result = alu.op_add(a, b).out
+    isADDU: result = alu.op_add(a, b).out
+    isSUB:  result = alu.op_sub(a, b).out
+    isSUBU: result = alu.op_sub(a, b).out
+    isAND:  result = alu.op_and(a, b).out
+    isOR:   result = alu.op_or(a, b).out
+    isXOR:  result = alu.op_xor(a, b).out
+    isNOR:  result = alu.op_nor(a, b).out
+  }
+  private def ex_shift(b: Bit(32), shamt: Bit(5)): Unit = any {
+    isSLL: result = shift.sll(b, shamt).out
+    isSRL: result = shift.srl(b, shamt).out
+    isSRA: result = shift.sra(b, shamt).out
+  }
+  private def ex_set(a: Bit(32), b: Bit(32)): Unit = par {
+    val neg_pos = ((a.msb & ~b.msb) == 0b1) // a is negative, b is positive
+    val pos_neg = ((~a.msb & b.msb) == 0b1) // a is positive, b is negative
+    alu.op_sub(a, b)
+    any {
+        isSLT: alt {
+          neg_pos: result = Bit(32).one  // a < b
+          pos_neg: result = Bit(32).zero // a > b
+          else: result = if (alu.out.msb == 0b1) Bit(32).one else Bit(32).zero // 同符号の場合
+        }
+        isSLTU: alt {
+	        neg_pos: result = Bit(32).zero // a > b
+	        pos_neg: result = Bit(32).one  // a < b
+	        else: result = if (a < b) Bit(32).one else Bit(32).zero // 減算機は不要
+      }
+    }
+  }
+  private def ex_store(a: Bit(32), b: Bit(32)): Unit = {
+    val lo2 = alu.out(1, 0) // lower 2-bits 
+    result = alu.op_add(a, b).out // address calculation
+    any {
+      isSB: lo2 match {
+        case 0b00 => par {
+          mdata_out = mdata(7, 0) ++ Bit(24).zero
+          store_loc = 0b1000
+        }
+        case 0b01 => par {
+          mdata_out = Bit(8).zero ++ mdata(7, 0) ++ Bit(16).zero
+          store_loc = 0b0100
+        }
+        case 0b10 => par {
+          mdata_out = Bit(16).zero ++ mdata(7, 0) ++ Bit(8).zero
+          store_loc = 0b0010
+        }
+        case 0b11 => par {
+          mdata_out = Bit(24).zero ++ mdata(7, 0)
+          store_loc = 0b0001
+        }
+      }
+      isSW: par {
+        mdata_out = mdata
+        store_loc = 0b1111
+      }
+    }
+  }
+  def exec(op, funct, shamt, a, b, mdata): Unit = {
+    // ex_decode(op, funct)
+    any {
+      isALU:   ex_alu(a, b)
+      isSHIFT: ex_shift(b, shamt)
+      isLUI:   result = b(15, 0) ++ Bit(16).zero
+      isSET:   ex_set(a, b)
+      isBJ:    result = alu.op_add(a, b).out  // target address calc.
+      isLOAD:  result = alu.op_add(a, b).out  // address calc.
+      isSTORE: ex_store(a, b)
+      else:    result = 0x12345678 // dummy
+    }
+    if (!isSTORE) {
+      mdata_out = Bit(32).allOne
+      store_loc = 0b0000
+    }
+  } // def exec(op, funct, shamt, a, b, mdata): Unit
+  
+} // module p32ExecUnit
+
+/* End of file (p32ExecUnit.fsl) */

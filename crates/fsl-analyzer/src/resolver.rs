@@ -12,11 +12,7 @@ use crate::symbols::{Reference, ResolvedTo, SymbolTable};
 
 /// 名前解決のエントリポイント
 /// 事前に `builder::build` で SymbolTable と scopes が構築されている必要がある
-pub fn resolve_references(
-    unit: &CompilationUnit,
-    table: &mut SymbolTable,
-    builtins: &Builtins,
-) {
+pub fn resolve_references(unit: &CompilationUnit, table: &mut SymbolTable, builtins: &Builtins) {
     for item in &unit.items {
         match &item.inner {
             Item::Module(m) => walk_module(table, builtins, m),
@@ -70,7 +66,7 @@ fn walk_field(table: &mut SymbolTable, b: &Builtins, f: &Field) {
         Field::Input(_)
         | Field::Output(_)
         | Field::OutputFn(_)
-        | Field::Instance(_)
+        | Field::NewInstance(_)
         | Field::Composite(_)
         | Field::Error => {}
     }
@@ -79,7 +75,7 @@ fn walk_field(table: &mut SymbolTable, b: &Builtins, f: &Field) {
 fn walk_stage_item(table: &mut SymbolTable, b: &Builtins, si: &StageItem) {
     match si {
         StageItem::State(s) => walk_stmt(table, b, &s.body),
-        StageItem::Reg(r) => {
+        StageItem::RegDecl(r) => {
             if let Some(init) = &r.init {
                 walk_expr(table, b, init);
             }
@@ -108,7 +104,7 @@ fn walk_block(table: &mut SymbolTable, b: &Builtins, blk: &Block) {
 fn walk_stmt(table: &mut SymbolTable, b: &Builtins, stmt: &Statement) {
     match stmt {
         Statement::Val(v) => walk_expr(table, b, &v.init),
-        Statement::RegAssign(lhs, rhs) | Statement::Assign(lhs, rhs) => {
+        Statement::MemAssign(lhs, rhs) | Statement::Assign(lhs, rhs) => {
             walk_expr(table, b, lhs);
             walk_expr(table, b, rhs);
         }
@@ -132,7 +128,7 @@ fn walk_stmt(table: &mut SymbolTable, b: &Builtins, stmt: &Statement) {
 
 fn walk_expr(table: &mut SymbolTable, b: &Builtins, e: &Expr) {
     match &e.inner {
-        Expr_::Path(id) => push_path_ref(table, b, id),
+        Expr_::Variable(id) => push_path_ref(table, b, id),
         // フィールドアクセスの根のみ解決．フィールド名側はモジュール内部解決の対象
         Expr_::Field(root, _name) => walk_expr(table, b, root),
         Expr_::Call(callee, args) => {
@@ -167,7 +163,7 @@ fn walk_expr(table: &mut SymbolTable, b: &Builtins, e: &Expr) {
         Expr_::Block(blk) => walk_block(table, b, blk),
         // new <ModName> の解決はフェーズ3
         Expr_::New(_) => {}
-        Expr_::Int(_) | Expr_::Str(_) | Expr_::Bool(_) | Expr_::Unit | Expr_::Error => {}
+        Expr_::IntLit(_) | Expr_::StringLit(_) | Expr_::Bool(_) | Expr_::Unit | Expr_::Error => {}
     }
 }
 

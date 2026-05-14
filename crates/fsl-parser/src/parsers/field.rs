@@ -9,7 +9,7 @@ use chumsky::{
 use fsl_lexer::Token;
 
 use crate::{
-    Block, CompositeDef, CompositeField, Expr, Field, FnBodyKind, FnDef, Ident, InstanceDecl,
+    Block, CompositeDef, CompositeField, Expr, Field, FnBodyKind, FnDef, Ident, NewInstance,
     OutputFnDecl, Param, PortDecl, StageDef, StageItem, StateDef, ValDecl, ValLhs,
     parsers::{
         RecBlock, RecExpr,
@@ -280,7 +280,7 @@ where
                     ty: ty,
                     init: e,
                 }),
-                ValRhs::Instance(i) => Field::Instance(InstanceDecl {
+                ValRhs::Instance(i) => Field::NewInstance(NewInstance {
                     name: ident,
                     module_name: i,
                 }),
@@ -331,7 +331,7 @@ where
 {
     choice((
         state_def(block.clone(), expr.clone()).map(StageItem::State),
-        reg_def(expr.clone()).map(StageItem::Reg),
+        reg_def(expr.clone()).map(StageItem::RegDecl),
         mem_def(expr.clone()).map(StageItem::Mem),
         val_decl_def(expr.clone()).map(StageItem::Val),
         // それ以外は単独の文として stage に組み込む

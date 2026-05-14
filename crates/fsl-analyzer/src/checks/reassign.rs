@@ -64,7 +64,7 @@ fn walk_block(ctx: &AnalysisContext, diags: &mut Vec<Diagnostic>, b: &Block) {
 fn walk_stmt(ctx: &AnalysisContext, diags: &mut Vec<Diagnostic>, stmt: &Statement) {
     match stmt {
         Statement::Assign(lhs, _) => check_eq_assign(ctx, diags, lhs),
-        Statement::RegAssign(lhs, _) => check_reg_assign(ctx, diags, lhs),
+        Statement::MemAssign(lhs, _) => check_reg_assign(ctx, diags, lhs),
         Statement::BlockKind(_, b) => walk_block(ctx, diags, b),
         Statement::Expr(e) => walk_blocks_in_expr(ctx, diags, e),
         _ => {}
@@ -159,7 +159,7 @@ fn check_reg_assign(ctx: &AnalysisContext, diags: &mut Vec<Diagnostic>, lhs: &Ex
 
 fn root_ident(e: &Expr) -> Option<&Ident> {
     match &e.inner {
-        Expr_::Path(id) => Some(id),
+        Expr_::Variable(id) => Some(id),
         Expr_::Field(root, _) => root_ident(root),
         Expr_::Call(callee, _) => root_ident(callee),
         _ => None,

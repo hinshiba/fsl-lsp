@@ -1,0 +1,79 @@
+/* (regs32x8.fsl) */
+
+module regs32x8 {
+  input      in: Bit(32)
+  input in_addr: Bit(3)
+  input  a_addr: Bit(3)
+  input  b_addr: Bit(3)
+  output      a: Bit(32)
+  output      b: Bit(32)
+
+  reg reg0: Bit(32)
+  reg reg1: Bit(32)
+  reg reg2: Bit(32)
+  reg reg3: Bit(32)
+  reg reg4: Bit(32)
+  reg reg5: Bit(32)
+  reg reg6: Bit(32)
+  reg reg7: Bit(32)
+
+  def read_a(a_addr): Unit = {
+    a = a_addr match {
+      case 0b000 => reg0;
+      case 0b001 => reg1;
+      case 0b010 => reg2;
+      case 0b011 => reg3;
+      
+      case 0b100 => reg4;
+      case 0b101 => reg5;
+      case 0b110 => reg6;
+      case 0b111 => reg7;
+    }
+  }
+  def read_b(b_addr): Unit = {
+    b = b_addr match {
+      case 0b000 => reg0;
+      case 0b001 => reg1;
+      case 0b010 => reg2;
+      case 0b011 => reg3;
+      
+      case 0b100 => reg4;
+      case 0b101 => reg5;
+      case 0b110 => reg6;
+      case 0b111 => reg7;
+    }
+  }
+
+
+  def write(in_addr, in): Unit = {
+    in_addr match {
+      case 0b000 => reg0 := in;
+      case 0b001 => reg1 := in;
+      case 0b010 => reg2 := in;
+      case 0b011 => reg3 := in;
+      
+      case 0b100 => reg4 := in;
+      case 0b101 => reg5 := in;
+      case 0b110 => reg6 := in;
+      case 0b111 => reg7 := in;
+    }
+    
+  }
+
+  def clear(): Unit = {
+    par {
+      reg0 = Bit(32).zero;
+      reg1 = Bit(32).zero;
+      reg2 = Bit(32).zero;
+      reg3 = Bit(32).zero;
+
+      reg4 = Bit(32).zero;
+      reg5 = Bit(32).zero;
+      reg6 = Bit(32).zero;
+      reg7 = Bit(32).zero;
+    }
+  }
+}
+
+/* End of file (regs32x8.fsl) */
+

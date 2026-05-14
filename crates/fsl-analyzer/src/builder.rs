@@ -7,7 +7,7 @@ use chumsky::span::Spanned;
 use fsl_parser::*;
 
 use crate::scope::{ScopeId, ScopeKind};
-use crate::span::{to_range, Span};
+use crate::span::{Span, to_range};
 use crate::symbol::{DefId, Mutability, Symbol, SymbolKind};
 use crate::symbols::SymbolTable;
 use crate::ty::TypeInfo;
@@ -73,12 +73,28 @@ fn visit_field(t: &mut SymbolTable, scope: ScopeId, f: &Field, full: Span) {
     match f {
         Field::Reg(r) => {
             let ty = Some(TypeInfo::from_ast(&r.ty));
-            push_named_symbol(t, scope, &r.name, SymbolKind::Reg, full, ty, Mutability::Reg);
+            push_named_symbol(
+                t,
+                scope,
+                &r.name,
+                SymbolKind::Reg,
+                full,
+                ty,
+                Mutability::Reg,
+            );
         }
         Field::Mem(m) => {
             let elem = TypeInfo::from_ast(&m.elem_ty);
             let ty = Some(TypeInfo::Array(Box::new(elem)));
-            push_named_symbol(t, scope, &m.name, SymbolKind::Mem, full, ty, Mutability::Reg);
+            push_named_symbol(
+                t,
+                scope,
+                &m.name,
+                SymbolKind::Mem,
+                full,
+                ty,
+                Mutability::Reg,
+            );
         }
         Field::Input(p) => {
             let ty = Some(TypeInfo::from_ast(&p.ty));
@@ -119,7 +135,7 @@ fn visit_field(t: &mut SymbolTable, scope: ScopeId, f: &Field, full: Span) {
             let fn_scope = t.scopes.new_scope(Some(scope), ScopeKind::Function, full);
             push_params(t, fn_scope, &d.params);
         }
-        Field::Instance(i) => {
+        Field::NewInstance(i) => {
             let ty = Some(TypeInfo::Named(i.module_name.inner.clone()));
             push_named_symbol(
                 t,
@@ -216,14 +232,30 @@ fn visit_stage_item(t: &mut SymbolTable, scope: ScopeId, si: &StageItem, full: S
                 .new_scope(Some(scope), ScopeKind::State, full.clone());
             visit_stmt(t, s, &state.body, full);
         }
-        StageItem::Reg(r) => {
+        StageItem::RegDecl(r) => {
             let ty = Some(TypeInfo::from_ast(&r.ty));
-            push_named_symbol(t, scope, &r.name, SymbolKind::Reg, full, ty, Mutability::Reg);
+            push_named_symbol(
+                t,
+                scope,
+                &r.name,
+                SymbolKind::Reg,
+                full,
+                ty,
+                Mutability::Reg,
+            );
         }
         StageItem::Mem(m) => {
             let elem = TypeInfo::from_ast(&m.elem_ty);
             let ty = Some(TypeInfo::Array(Box::new(elem)));
-            push_named_symbol(t, scope, &m.name, SymbolKind::Mem, full, ty, Mutability::Reg);
+            push_named_symbol(
+                t,
+                scope,
+                &m.name,
+                SymbolKind::Mem,
+                full,
+                ty,
+                Mutability::Reg,
+            );
         }
         StageItem::Val(v) => push_val(t, scope, v, full),
         StageItem::Statement(stmt) => visit_stmt(t, scope, stmt, full),
@@ -239,7 +271,7 @@ fn visit_stmt(t: &mut SymbolTable, scope: ScopeId, stmt: &Statement, full: Span)
         Statement::Val(v) => push_val(t, scope, v, full),
         Statement::BlockKind(_, b) => visit_subblock(t, scope, b, full),
         Statement::Expr(e) => visit_expr_for_blocks(t, scope, e),
-        Statement::RegAssign(_, rhs) | Statement::Assign(_, rhs) => {
+        Statement::MemAssign(_, rhs) | Statement::Assign(_, rhs) => {
             visit_expr_for_blocks(t, scope, rhs)
         }
         _ => {}
@@ -291,9 +323,9 @@ fn visit_expr_for_blocks(t: &mut SymbolTable, scope: ScopeId, e: &Expr) {
         }
         Expr_::Field(root, _) => visit_expr_for_blocks(t, scope, root),
         // 葉ノードはスコープを増やさない
-        Expr_::Path(_)
-        | Expr_::Int(_)
-        | Expr_::Str(_)
+        Expr_::Variable(_)
+        | Expr_::IntLit(_)
+        | Expr_::StringLit(_)
         | Expr_::Bool(_)
         | Expr_::Unit
         | Expr_::New(_)

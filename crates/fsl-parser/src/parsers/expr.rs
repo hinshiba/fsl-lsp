@@ -32,18 +32,18 @@ where
 {
     // ---- リテラル ----
     let int_lit = select! {
-        Token::IntLit(s) => Expr_::Int(s),
+        Token::IntLit(s) => Expr_::IntLit(s),
     }
     .spanned();
     let str_lit = select! {
-        Token::StringLit(s) => Expr_::Str(s),
+        Token::StringLit(s) => Expr_::StringLit(s),
     }
     .spanned();
     let true_lit = just(Token::True).map(|_| Expr_::Bool(true)).spanned();
     let false_lit = just(Token::False).map(|_| Expr_::Bool(false)).spanned();
 
     // ---- 識別子参照 ----
-    let path_expr = ident_def().map(|id| Expr_::Path(id)).spanned();
+    let path_expr = ident_def().map(|id| Expr_::Variable(id)).spanned();
 
     // ---- 括弧式・タプル・Unit ----
     let paren_or_tuple = expr
@@ -89,9 +89,7 @@ where
         .then(branch_body.clone())
         // else
         .then(just(Token::Else).ignore_then(branch_body.clone()).or_not())
-        .map(|((c, t), e_opt)| {
-            Expr_::If(Box::new(c), Box::new(t), e_opt.map(Box::new))
-        })
+        .map(|((c, t), e_opt)| Expr_::If(Box::new(c), Box::new(t), e_opt.map(Box::new)))
         .spanned();
 
     // ---- new ModName ----
@@ -144,84 +142,132 @@ where
                 },
             ),
             // 前置 単項演算
-            prefix(11, just(Token::Tilde), |_, rhs, e: &mut MapExtra<'_, '_, _, _>| {
-                mk_unary(UnaryOp::BitNot, rhs, e.span())
-            }),
-            prefix(11, just(Token::Bang), |_, rhs, e: &mut MapExtra<'_, '_, _, _>| {
-                mk_unary(UnaryOp::LogNot, rhs, e.span())
-            }),
-            prefix(11, just(Token::Minus), |_, rhs, e: &mut MapExtra<'_, '_, _, _>| {
-                mk_unary(UnaryOp::Neg, rhs, e.span())
-            }),
-            prefix(11, just(Token::Pipe), |_, rhs, e: &mut MapExtra<'_, '_, _, _>| {
-                mk_unary(UnaryOp::RedOr, rhs, e.span())
-            }),
+            prefix(
+                11,
+                just(Token::Tilde),
+                |_, rhs, e: &mut MapExtra<'_, '_, _, _>| mk_unary(UnaryOp::BitNot, rhs, e.span()),
+            ),
+            prefix(
+                11,
+                just(Token::Bang),
+                |_, rhs, e: &mut MapExtra<'_, '_, _, _>| mk_unary(UnaryOp::LogNot, rhs, e.span()),
+            ),
+            prefix(
+                11,
+                just(Token::Minus),
+                |_, rhs, e: &mut MapExtra<'_, '_, _, _>| mk_unary(UnaryOp::Neg, rhs, e.span()),
+            ),
+            prefix(
+                11,
+                just(Token::Pipe),
+                |_, rhs, e: &mut MapExtra<'_, '_, _, _>| mk_unary(UnaryOp::RedOr, rhs, e.span()),
+            ),
             // 中置  `n # x` 符号拡張
-            infix(left(10), just(Token::Hash), |l, _, r, e: &mut MapExtra<'_, '_, _, _>| {
-                mk_bin(BinaryOp::SignExt, l, r, e.span())
-            }),
+            infix(
+                left(10),
+                just(Token::Hash),
+                |l, _, r, e: &mut MapExtra<'_, '_, _, _>| mk_bin(BinaryOp::SignExt, l, r, e.span()),
+            ),
             // `*`
-            infix(left(9), just(Token::Star), |l, _, r, e: &mut MapExtra<'_, '_, _, _>| {
-                mk_bin(BinaryOp::Mul, l, r, e.span())
-            }),
+            infix(
+                left(9),
+                just(Token::Star),
+                |l, _, r, e: &mut MapExtra<'_, '_, _, _>| mk_bin(BinaryOp::Mul, l, r, e.span()),
+            ),
             // `+` `-`
-            infix(left(8), just(Token::Plus), |l, _, r, e: &mut MapExtra<'_, '_, _, _>| {
-                mk_bin(BinaryOp::Add, l, r, e.span())
-            }),
-            infix(left(8), just(Token::Minus), |l, _, r, e: &mut MapExtra<'_, '_, _, _>| {
-                mk_bin(BinaryOp::Sub, l, r, e.span())
-            }),
+            infix(
+                left(8),
+                just(Token::Plus),
+                |l, _, r, e: &mut MapExtra<'_, '_, _, _>| mk_bin(BinaryOp::Add, l, r, e.span()),
+            ),
+            infix(
+                left(8),
+                just(Token::Minus),
+                |l, _, r, e: &mut MapExtra<'_, '_, _, _>| mk_bin(BinaryOp::Sub, l, r, e.span()),
+            ),
             // `++` 連結
-            infix(left(7), just(Token::PlusPlus), |l, _, r, e: &mut MapExtra<'_, '_, _, _>| {
-                mk_bin(BinaryOp::Concat, l, r, e.span())
-            }),
+            infix(
+                left(7),
+                just(Token::PlusPlus),
+                |l, _, r, e: &mut MapExtra<'_, '_, _, _>| mk_bin(BinaryOp::Concat, l, r, e.span()),
+            ),
             // シフト
-            infix(left(6), just(Token::Shl), |l, _, r, e: &mut MapExtra<'_, '_, _, _>| {
-                mk_bin(BinaryOp::Shl, l, r, e.span())
-            }),
-            infix(left(6), just(Token::Shr), |l, _, r, e: &mut MapExtra<'_, '_, _, _>| {
-                mk_bin(BinaryOp::Shr, l, r, e.span())
-            }),
-            infix(left(6), just(Token::ShrLogical), |l, _, r, e: &mut MapExtra<'_, '_, _, _>| {
-                mk_bin(BinaryOp::ShrLogical, l, r, e.span())
-            }),
+            infix(
+                left(6),
+                just(Token::Shl),
+                |l, _, r, e: &mut MapExtra<'_, '_, _, _>| mk_bin(BinaryOp::Shl, l, r, e.span()),
+            ),
+            infix(
+                left(6),
+                just(Token::Shr),
+                |l, _, r, e: &mut MapExtra<'_, '_, _, _>| mk_bin(BinaryOp::Shr, l, r, e.span()),
+            ),
+            infix(
+                left(6),
+                just(Token::ShrLogical),
+                |l, _, r, e: &mut MapExtra<'_, '_, _, _>| {
+                    mk_bin(BinaryOp::ShrLogical, l, r, e.span())
+                },
+            ),
             // `&`
-            infix(left(5), just(Token::Amp), |l, _, r, e: &mut MapExtra<'_, '_, _, _>| {
-                mk_bin(BinaryOp::BitAnd, l, r, e.span())
-            }),
+            infix(
+                left(5),
+                just(Token::Amp),
+                |l, _, r, e: &mut MapExtra<'_, '_, _, _>| mk_bin(BinaryOp::BitAnd, l, r, e.span()),
+            ),
             // `|` `^`
-            infix(left(4), just(Token::Pipe), |l, _, r, e: &mut MapExtra<'_, '_, _, _>| {
-                mk_bin(BinaryOp::BitOr, l, r, e.span())
-            }),
-            infix(left(4), just(Token::Caret), |l, _, r, e: &mut MapExtra<'_, '_, _, _>| {
-                mk_bin(BinaryOp::BitXor, l, r, e.span())
-            }),
+            infix(
+                left(4),
+                just(Token::Pipe),
+                |l, _, r, e: &mut MapExtra<'_, '_, _, _>| mk_bin(BinaryOp::BitOr, l, r, e.span()),
+            ),
+            infix(
+                left(4),
+                just(Token::Caret),
+                |l, _, r, e: &mut MapExtra<'_, '_, _, _>| mk_bin(BinaryOp::BitXor, l, r, e.span()),
+            ),
             // 比較
-            infix(left(3), just(Token::EqEq), |l, _, r, e: &mut MapExtra<'_, '_, _, _>| {
-                mk_bin(BinaryOp::Eq, l, r, e.span())
-            }),
-            infix(left(3), just(Token::NotEq), |l, _, r, e: &mut MapExtra<'_, '_, _, _>| {
-                mk_bin(BinaryOp::Ne, l, r, e.span())
-            }),
-            infix(left(3), just(Token::Lt), |l, _, r, e: &mut MapExtra<'_, '_, _, _>| {
-                mk_bin(BinaryOp::Lt, l, r, e.span())
-            }),
-            infix(left(3), just(Token::Le), |l, _, r, e: &mut MapExtra<'_, '_, _, _>| {
-                mk_bin(BinaryOp::Le, l, r, e.span())
-            }),
-            infix(left(3), just(Token::Gt), |l, _, r, e: &mut MapExtra<'_, '_, _, _>| {
-                mk_bin(BinaryOp::Gt, l, r, e.span())
-            }),
-            infix(left(3), just(Token::Ge), |l, _, r, e: &mut MapExtra<'_, '_, _, _>| {
-                mk_bin(BinaryOp::Ge, l, r, e.span())
-            }),
+            infix(
+                left(3),
+                just(Token::EqEq),
+                |l, _, r, e: &mut MapExtra<'_, '_, _, _>| mk_bin(BinaryOp::Eq, l, r, e.span()),
+            ),
+            infix(
+                left(3),
+                just(Token::NotEq),
+                |l, _, r, e: &mut MapExtra<'_, '_, _, _>| mk_bin(BinaryOp::Ne, l, r, e.span()),
+            ),
+            infix(
+                left(3),
+                just(Token::Lt),
+                |l, _, r, e: &mut MapExtra<'_, '_, _, _>| mk_bin(BinaryOp::Lt, l, r, e.span()),
+            ),
+            infix(
+                left(3),
+                just(Token::Le),
+                |l, _, r, e: &mut MapExtra<'_, '_, _, _>| mk_bin(BinaryOp::Le, l, r, e.span()),
+            ),
+            infix(
+                left(3),
+                just(Token::Gt),
+                |l, _, r, e: &mut MapExtra<'_, '_, _, _>| mk_bin(BinaryOp::Gt, l, r, e.span()),
+            ),
+            infix(
+                left(3),
+                just(Token::Ge),
+                |l, _, r, e: &mut MapExtra<'_, '_, _, _>| mk_bin(BinaryOp::Ge, l, r, e.span()),
+            ),
             // 論理
-            infix(left(2), just(Token::AmpAmp), |l, _, r, e: &mut MapExtra<'_, '_, _, _>| {
-                mk_bin(BinaryOp::LogAnd, l, r, e.span())
-            }),
-            infix(left(1), just(Token::PipePipe), |l, _, r, e: &mut MapExtra<'_, '_, _, _>| {
-                mk_bin(BinaryOp::LogOr, l, r, e.span())
-            }),
+            infix(
+                left(2),
+                just(Token::AmpAmp),
+                |l, _, r, e: &mut MapExtra<'_, '_, _, _>| mk_bin(BinaryOp::LogAnd, l, r, e.span()),
+            ),
+            infix(
+                left(1),
+                just(Token::PipePipe),
+                |l, _, r, e: &mut MapExtra<'_, '_, _, _>| mk_bin(BinaryOp::LogOr, l, r, e.span()),
+            ),
         ))
         .boxed();
 

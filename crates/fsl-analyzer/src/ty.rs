@@ -46,8 +46,8 @@ impl TypeInfo {
 /// hover 表示用の式の簡易整形．完全な式復元ではない
 fn format_expr(e: &Expr_) -> String {
     match e {
-        Expr_::Int(s) => s.clone(),
-        Expr_::Path(id) => id.inner.clone(),
+        Expr_::IntLit(s) => s.clone(),
+        Expr_::Variable(id) => id.inner.clone(),
         _ => "?".into(),
     }
 }

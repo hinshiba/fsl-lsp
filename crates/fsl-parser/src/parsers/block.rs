@@ -117,7 +117,7 @@ where
             .or_not(),
         )
         .map(|(lhs, opt)| match opt {
-            Some((true, rhs)) => Statement::RegAssign(lhs, rhs),
+            Some((true, rhs)) => Statement::MemAssign(lhs, rhs),
             Some((false, rhs)) => Statement::Assign(lhs, rhs),
             None => Statement::Expr(lhs),
         });

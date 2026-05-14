@@ -82,7 +82,7 @@ mod tests {
             Item::Module(m) => m,
             _ => panic!(),
         };
-        assert!(matches!(m.items[0].inner, Field::Instance(_)));
+        assert!(matches!(m.items[0].inner, Field::NewInstance(_)));
     }
 
     #[test]

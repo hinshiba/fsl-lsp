@@ -1,0 +1,328 @@
+/*
+ *  32-bit RISC Microprocessor for Information Technology Experiments A
+ *  (Computer Hardware) at Okayama University
+ *
+ *  Multicycle (2-5 cycle/inst) Edition
+ *  version 4.0.0 (2020-05-25)
+ *
+ *  (p32m2.fsl)
+ */
+
+module p32m2 extends p32Opcode with p32ExceptionCauseCode {
+  // instruction
+  output  i_addr: Bit(32) // instruction address
+  input   i_data: Bit(32) // instruction 
+  output def i_read(i_addr): Unit // instruction read
+ 
+  // data
+  output  d_addr: Bit(32) // data address
+  input   r_data: Bit(32) // read data
+  output wr_data: Bit(32) // write data
+  output   w_loc: Bit(4)  // write location
+  output def d_read(d_addr): Unit // data read
+  output def d_write(d_addr, w_loc, wr_data): Unit // data write
+ 
+  // other
+  output def halt(): Unit // halt
+  output def dump_regs_done(): Unit // (for simulation)
+
+  /* Exception */
+  reg cause: Bit(4)  // cause - exception cause register
+  reg epc:   Bit(32) // epc - exception program counter
+ 
+  /* IF */
+  reg pc: Bit(32) // pc - program counter
+ 
+  /* ID/EX */
+  reg ex_mdr: Bit(32) // mdr - memory data register
+ 
+  // submodule instatiation 
+  val pc_add     = new add32
+  val regsfile   = new regs32x32
+  val execunit   = new p32ExecUnit
+  val decodeunit = new p32DecodeUnit
+ 
+  val INITIAL_PC = Bit(32).zero
+  val EXCEPTION_HANDLER = 0x80000080
+ 
+  def inst_en(i_data): Unit = {} // instruction read enable
+ 
+  def data_en(r_data): Unit = {} // data read enable
+ 
+  def write_done(): Unit = {}    // data write done
+ 
+  def start(): Unit = { // start processor
+    regsfile.clear()
+    generate START
+  }
+
+  def ibus_err(): Unit = { // instruction bus error
+    set_cause(CAUSE_IBE)
+    generate STOP
+  }
+ 
+  def dbus_err(): Unit = { // data bus error
+    set_cause(CAUSE_IBE)
+    generate STOP
+  }
+
+  private def reset(): Unit = {} // reset processor
+ 
+  private def decodeunit.update_pc(pc_in: Bit(32)): Unit = {
+    pc := pc_in
+  }
+  private def decodeunit.update_mdr(mdr_in: Bit(32)): Unit = {
+    ex_mdr := mdr_in
+  }
+  private def decodeunit.set_epc(epc_in: Bit(32)): Unit = {
+    set_epc(epc_in)
+  }
+  private def decodeunit.set_cause(cause_in: Bit(4)): Unit = {
+    set_cause(cause_in)
+  }
+  private def decodeunit.exception(): Unit = {
+    generate STOP
+  }
+  private def set_epc(epc_in: Bit(32)): Unit = {
+    //_display("set_epc: %x", epc_in)
+    epc := epc_in
+  }
+  private def set_cause(cause_in: Bit(4)): Unit = {
+    //_display("set_cause: %x", cause_in)
+    cause := cause_in
+  }
+ 
+  stage START {
+    any {
+      reset.isRunning: finish
+      start.isRunning: finish
+      else: relay IF(INITIAL_PC)
+    }
+  } // stage START
+ 
+  stage STOP {
+    par {
+      halt()
+      reset()
+      finish
+    }
+  } // stage STOP
+ 
+  // IF - instruction fetch stage
+  stage IF(pc) { // pc - program counter
+    state st0 par { // instruction read request
+      i_read(pc)
+      pc := pc_add.add(pc, 4.toBit(32), 0b0).sum // pc <- pc + 4
+      any {
+        reset.isRunning: finish
+        inst_en.isRunning: relay ID(i_data)
+        else: goto st1 // instruction is not ready to read
+      } // any
+    } // state st0 par
+    state st1 par { // wait for instruction read
+      any {
+        reset.isRunning: finish
+        inst_en.isRunning: par {
+          relay ID(i_data)
+          goto st0
+	}
+      } // any
+    } // state st1 par
+  } // stage IF
+
+  // ID - instruction decode stage
+  stage ID(ir: Bit(32)) { // ir - instruction register
+    par {
+      val inst = ir
+      val (a_addr, b_addr) = (inst(25, 21), inst(20, 16)) // rs, rt
+      val a_data = regsfile.read_a(a_addr).a // rs 
+      val b_data = regsfile.read_b(b_addr).b // rt
+      val op = inst(31, 26) // op field
+
+      decodeunit.decode(inst, a_data, b_data, pc)
+ 
+      any {
+        reset.isRunning: finish
+        decodeunit.undefined_inst.isRunning: finish
+	      (op == BEQ || op == BNE): alt { // is branch (beq/bne) ?
+	        decodeunit.update_pc.isRunning: relay IF(decodeunit.pc_out)
+	        else:                           relay IF(pc)
+	      }
+        (op == J): relay IF(decodeunit.pc_out)          // jump
+        else: relay EX(op,                   // op
+          inst(5, 0),           // funct 
+          decodeunit.shamt_out, 
+          decodeunit.dest_out,  
+          decodeunit.a_out,
+          decodeunit.b_out)
+      } // any
+    } // par
+  } // stage ID
+
+  // EX - execution stage
+  stage EX(ex_op: Bit(6), ex_funct: Bit(6), ex_shamt: Bit(5), ex_dest: Bit(5),
+	   ex_a: Bit(32), ex_b: Bit(32)) {
+    par {
+      val isLoadStore = ((ex_op == LW) || (ex_op == LB) || (ex_op == SW) || (ex_op == SB))
+      execunit.exec(ex_op, ex_funct, ex_shamt, ex_a, ex_b, ex_mdr)
+      any {
+        reset.isRunning: finish
+        else: any {
+          isLoadStore: relay MEM(ex_op, 
+            ex_dest, 
+            execunit.result,
+            execunit.mdata_out,
+            execunit.store_loc)
+          else: relay WB(ex_op, 
+            ex_dest, 
+            execunit.result,
+            0x00000000)
+        }
+      } // any
+    } // par
+  } // stage EX
+ 
+  // MEM - memory stage
+  stage MEM(mem_op: Bit(6), mem_dest: Bit(5), mem_in: Bit(32), 
+	    mem_mdr: Bit(32), store_loc: Bit(4)) {
+    state st0 par {
+      alt {
+	reset.isRunning: finish
+	((mem_op == LW) || (mem_op == LB)): par { // load instructions
+	  d_read(mem_in)  // read data request
+	  any {
+	    data_en.isRunning: par { // read data enable
+	      relay WB(mem_op,
+		       mem_dest,
+		       mem_in,
+		       r_data)
+	    }
+	    else: goto st1 // read data is not ready to read
+	  }
+	} // ((mem_op == LW) || (mem_op == LB))
+	((mem_op == SW) || (mem_op == SB)): par { // store instrucions
+	  d_write(mem_in, store_loc, mem_mdr)                      // write data request
+	  relay IF(pc)
+	} // ((mem_op == SW) || (mem_op == SB))
+	else: par { // not load/store instruction
+	  // not reach here, maybe...
+	  relay WB(mem_op,
+		   mem_dest,
+		   mem_in,
+		   0x00000000)
+	}
+      } // alt
+    } // stage st0 par
+    state st1 par { // wait for data read
+      alt {
+	reset.isRunning: finish
+	data_en.isRunning: par { // read data enable
+	  relay WB(mem_op,
+		   mem_dest,
+		   mem_in,
+		   r_data)
+	  goto st0
+	}
+      } // alt
+    } // stage st1
+  } // stage MEM
+ 
+  // WB - writeback stage
+  stage WB(wb_op: Bit(6), wb_dest: Bit(5), wb_in: Bit(32),
+	   wb_load_data: Bit(32)) {
+    par {
+      val wb_addr = wb_dest
+      val wb_data = wb_op match { // load word (lw), load byte (lb)
+	case LW => wb_load_data  
+	case LB => align_data_lb(wb_in, wb_load_data)
+	case _  => wb_in
+      }
+      any {
+	!ID.isActive: par { // if ID stage is not active
+	  val w_addr = wb_addr
+	  val w_data = wb_data
+	  regsfile.write(w_addr, w_data) // write w_data to register
+	}
+      }
+      any {
+	reset.isRunning: finish
+	else: relay IF(pc)
+      }
+    } // par
+  } // stage WB
+ 
+  private def align_data_lb(addr: Bit(32), data: Bit(32)): Bit(32) = {
+    val lo2 = addr(1, 0) 
+    lo2 match {
+      case 0b00 => 32 # data(31, 24)
+      case 0b01 => 32 # data(23, 16)
+      case 0b10 => 32 # data(15,  8)
+      case 0b11 => 32 # data( 7,  0)
+    }
+  } // private def align_data_lb(addr: Bit(32), data: Bit(32)): Bit(32)
+
+
+
+  // dump register files (for simulation)
+  def dump_regs(): Unit = {
+    generate DUMP_REGS(0.toBit(5))
+  }
+  stage DUMP_REGS(n: Bit(5)) {
+    reg r0: Bit(32)
+    reg r1: Bit(32)
+    reg r2: Bit(32)
+    reg r3: Bit(32)
+    reg r4: Bit(32)
+    reg r5: Bit(32)
+    reg r6: Bit(32)
+    reg r7: Bit(32)
+    state st0 par {
+      r0 := regsfile.read_a(n).a
+      r1 := regsfile.read_b(n + 1).b
+      goto st1
+    }
+    state st1 par {
+      r2 := regsfile.read_a(n + 2).a
+      r3 := regsfile.read_b(n + 3).b
+      goto st2
+    }
+    state st2 par {
+      r4 := regsfile.read_a(n + 4).a
+      r5 := regsfile.read_b(n + 5).b
+      goto st3
+    }
+    state st3 par {
+      r6 := regsfile.read_a(n + 6).a
+      r7 := regsfile.read_b(n + 7).b
+      n match {
+	case 0b00000 => _display(" zero(0)  at(1)    v0(2)    v1(3)    a0(4)    a1(5)    a2(6)    a3(7)  ")
+	case 0b01000 => _display(" t0(8)    t1(9)    t2(10)   t3(11)   t4(12)   t5(13)   t6(14)   t7(15) ")
+	case 0b10000 => _display(" s0(16)   s1(17)   s2(18)   s3(19)   s4(20)   s5(21)   s6(22)   s7(23) ")
+	case 0b11000 => _display(" t8(24)   t9(25)   k0(26)   k1(27)   gp(28)   sp(29)   fp(30)   ra(31) ")
+      }
+      goto st4
+    }
+    state st4 par {
+      _display("%x %x %x %x %x %x %x %x", 
+	       r0, r1, r2, r3, r4, r5, r6, r7)
+      if (n != 0b11000) {
+	n := n + 8
+	goto st0
+      } else {
+	goto st5
+      }
+    }
+    state st5 par {
+      _display("pc: %x  epc: %x  cause: %x", pc, epc, cause)
+      goto st6
+    }
+    state st6 par {
+      dump_regs_done()
+      finish
+      goto st0
+    }
+  } // stage DUMP_REGS
+} // module p32m2
+
+/* End of file (p32m2.fsl) */
+
