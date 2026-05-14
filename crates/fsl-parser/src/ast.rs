@@ -214,22 +214,30 @@ pub type Expr = Spanned<Expr_>;
 // Spanned<>にするのを一括で行うため_をつけてある
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Expr_ {
-    /// 整数リテラルの未解釈ソース文字列
-    Int(String),
-    Str(String),
+    Unit,
+    // ---- リテラル ----
+    IntLit(u64),
+    BitLit(u64),
+    StringLit(String),
     Bool(bool),
-    /// 識別子参照
-    Path(Ident),
+
+    /// 変数
+    Variable(Ident),
+
     /// `(e1, e2, ...)` または単独の括弧式
     Tuple(Vec<Expr>),
-    Unit,
+
+    // ---- 演算 ----
     /// 単項 `~` `!` `-`
     Unary(UnaryOp, Box<Expr>),
     /// 二項演算
     Binary(BinaryOp, Box<Expr>, Box<Expr>),
-    /// `f(args)` 関数呼び出し兼ビット切り出し（意味解析で区別）
+    /// `f(args)` 関数呼び出し or ビット切り出し
+    /// 意味解析で区別する
     Call(Box<Expr>, Vec<Expr>),
-    /// `e.field`
+
+    // ---- 構造 ----
+    /// `expr.field`
     Field(Box<Expr>, Ident),
     /// `if (cond) then else else_`
     If(Box<Expr>, Box<Expr>, Option<Box<Expr>>),
