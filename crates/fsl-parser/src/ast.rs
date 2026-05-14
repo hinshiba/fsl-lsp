@@ -241,10 +241,44 @@ pub enum Expr_ {
     Field(Box<Expr>, Ident),
     /// `if (cond) then else else_`
     If(Box<Expr>, Box<Expr>, Option<Box<Expr>>),
-    /// `e match { case p => e ... }`
-    Match(Box<Expr>, Vec<MatchArm>),
-    /// 単独ブロック `{ ... }` を式として
-    Block(Block),
+
+    Generate(Ident, Vec<Expr>),
+
+    // ---- 宣言と代入 ----
+    // 普通はUnitを返す
+    /// val
+    ValDecl(ValDecl),
+
+    /// input, output, valの端子への代入
+    /// 左辺にビット切り出しが来る可能性あり
+    PortAssign(Box<Expr>, Box<Expr>),
+
+    /// reg, memの記憶素子への代入
+    /// 現時点の仕様では左側にスライスは来ない
+    MemAssign(Box<Expr>, Box<Expr>),
+
+    // ---- ブロック関連 ----
+    // 普通はUnitを返す
+    /// ブロック`{ ... }`
+    Block(Vec<Expr>),
+
+    /// `any { expr:Bool : expr[;] expr:Bool : expr[;] ... else: expr[;] }`
+    /// Unitを返す
+    Any(Vec<Spanned<Case>>, Box<Expr>),
+
+    /// `alt { expr:Bool : expr[;] expr:Bool : expr[;] ...  else: expr[;] }`
+    /// 実行結果を返す
+    Alt(Vec<Spanned<Case>>, Box<Expr>),
+
+    /// `seq { expr expr ... }`
+    /// Unitを返す
+    Seq(Vec<Expr>),
+    /// `par { expr expr ... }`
+    /// Unitを返す
+    Par(Vec<Expr>),
+    /// `expr match { case p => e ... }`
+    Match(Box<Expr>, Vec<Spanned<MatchArm>>),
+
     /// `new ModName`
     New(Ident),
     /// 解析失敗時のプレースホルダ
