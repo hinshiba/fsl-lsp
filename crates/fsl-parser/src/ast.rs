@@ -285,39 +285,57 @@ pub enum Expr_ {
     Error,
 }
 
+// 演算子の表
+// fsl-tutorial p18
+
 #[derive(Debug, Clone, PartialEq, Eq, Copy)]
 pub enum UnaryOp {
-    /// ビットNOT
+    // ---- ビット演算 ----
     BitNot,
+    // ---- リダクション演算 ----
+    ReducAnd,
+    ReducOr,
+    ReducXor,
+
     /// 論理NOT
     LogNot,
     /// 単項マイナス
     Neg,
-    /// リダクション論理和 `|x`（パターン上は二項 `|` と区別が必要）
-    RedOr,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Copy)]
 pub enum BinaryOp {
-    LogOr,
-    LogAnd,
+    // ---- ビット演算 ----
+    BitAnd,
+    BitOr,
+    BitXor,
+
+    // ---- 算術演算 ----
+    Add,
+    Sub,
+    Mul,
+
+    // ---- 比較演算 ----
     Eq,
     Ne,
     Lt,
     Le,
     Gt,
     Ge,
-    BitOr,
-    BitXor,
-    BitAnd,
-    Shl,
-    Shr,
-    ShrLogical,
+
+    // ---- 論理演算 ----
+    LogOr,
+    LogAnd,
+
+    // ---- ビットシフト演算 ----
+    Sll,
+    Srl,
+    Sra,
+
+    /// ビット連結演算
     Concat,
-    Add,
-    Sub,
-    Mul,
-    /// 符号拡張 `n # x`
+
+    /// 符号拡張演算
     SignExt,
 }
 
