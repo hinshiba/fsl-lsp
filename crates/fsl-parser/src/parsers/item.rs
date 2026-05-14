@@ -35,7 +35,9 @@ where
         // トレイトの実装
         .then(
             just(Token::With)
-                .ignore_then(atom::ident_def().repeated().collect())
+                .ignore_then(atom::ident_def())
+                .repeated()
+                .collect()
                 .or_not(),
         );
 
