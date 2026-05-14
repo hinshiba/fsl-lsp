@@ -340,6 +340,12 @@ pub enum BinaryOp {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Case {
+    pub cond: Expr,
+    pub body: Expr,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MatchArm {
     pub pattern: Pattern,
     pub body: Expr,
