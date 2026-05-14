@@ -42,18 +42,28 @@ pub struct ModuleDef {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Field {
+    // ---- 入出力端子 ----
+    Input(InputDecl),
+    Output(OutputDecl),
+    OutputFn(OutputFnDecl),
+
+    // ---- val ----
+    Val(ValDecl),
+    NewInstance(NewInstance),
+
+    // ---- 記憶素子 ----
     Reg(RegDecl),
     Mem(MemDecl),
-    Input(PortDecl),
-    Output(PortDecl),
-    OutputFn(OutputFnDecl),
-    Instance(InstanceDecl),
-    Fn(FnDef),
-    Always(Block),
-    Initial(Block),
-    Stage(StageDef),
+
+    // ---- 型宣言 ----
     Composite(CompositeDef),
-    Val(ValDecl),
+
+    // ---- 内容 ----
+    Always(Expr),
+    Initial(Expr),
+    Fn(FnDef),
+    Stage(StageDef),
+
     /// 解析失敗時のプレースホルダ
     Error,
 }
