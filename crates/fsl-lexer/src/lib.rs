@@ -156,10 +156,19 @@ pub enum Token {
     Hash,
 
     // ---- リテラル ----
-    #[regex(r"0b[01_]+", |lex| lex.slice().to_string())]
-    #[regex(r"0x[0-9a-fA-F_]+", |lex| lex.slice().to_string())]
-    #[regex(r"[0-9][0-9_]*", |lex| lex.slice().to_string())]
-    IntLit(String),
+    #[regex(r"0b[01_]+", |lex| {
+    let s = lex.slice()[2..].replace('_', ""); // "0b", "_"を除去
+    i64::from_str_radix(&s, 2)
+})]
+    #[regex(r"0x[0-9a-fA-F_]+", |lex| {
+    let s = lex.slice()[2..].replace('_', ""); // "0x", "_"を除去
+    i64::from_str_radix(&s, 16)
+})]
+    #[regex(r"[0-9][0-9_]*", |lex| {
+    let s = lex.slice().replace('_', ""); // _を除去
+    s.parse::<i64>()
+})]
+    IntLit(i64),
 
     #[regex(r#""([^"\\]|\\.)*""#, |lex| lex.slice().to_string())]
     StringLit(String),
@@ -269,7 +278,7 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert_eq!(lits, vec!["0", "100", "0b1010", "0xFF", "1_000"]);
+        assert_eq!(lits, vec![0, 100, 0b1010, 0xff, 1000]);
     }
 
     #[test]
