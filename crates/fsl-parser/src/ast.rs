@@ -69,39 +69,17 @@ pub enum Field {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RegDecl {
+pub struct Param {
     pub name: Ident,
-    pub ty: FslType,
-    pub init: Option<Expr>,
+    /// 引数型
+    pub ty: Option<FslType>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MemDecl {
-    pub name: Ident,
-    pub elem_ty: FslType,
-    pub size: Expr,
-    pub init: Vec<Expr>,
-}
+// ============================================================
+// 定義
+// ============================================================
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PortDecl {
-    pub name: Ident,
-    pub ty: FslType,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct OutputFnDecl {
-    pub name: Ident,
-    pub params: Vec<Spanned<Param>>,
-    pub ret: FslType,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct InstanceDecl {
-    pub name: Ident,
-    pub module_name: Ident,
-}
-
+/// 関数の定義
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FnDef {
     pub is_private: bool,
@@ -110,20 +88,10 @@ pub struct FnDef {
     pub name: Ident,
     pub params: Vec<Spanned<Param>>,
     pub ret: Option<FslType>,
-    pub body_kind: FnBodyKind,
-    pub body: Block,
+    pub body: Expr,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum FnBodyKind {
-    /// `def f(...): T = { ... }` 形式
-    Expr,
-    /// `def f(...) seq { ... }` 形式
-    Seq,
-    /// `def f(...) par { ... }` 形式
-    Par,
-}
-
+/// ステージの定義
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StageDef {
     pub name: Ident,
@@ -131,22 +99,24 @@ pub struct StageDef {
     pub body: Vec<Spanned<StageItem>>,
 }
 
-/// stage 本体には state 定義，stage ローカル変数（reg/val），文が混在する．
+/// stage 本体にはreg宣言, relayとfinishによるタスク処理, ステートマシンと実装が含まれる
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StageItem {
-    State(StateDef),
     Reg(RegDecl),
-    Mem(MemDecl),
-    Val(ValDecl),
-    Statement(Statement),
+    Relay(Ident, Vec<Expr>),
+    Finish,
+    State(StateDef),
+    Goto(Ident),
+    Expr(Expr),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StateDef {
     pub name: Ident,
-    pub body: Statement,
+    pub body: Expr,
 }
 
+/// 複合型定義
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompositeDef {
     pub name: Ident,
