@@ -129,80 +129,80 @@ pub struct CompositeField {
     pub ty: FslType,
 }
 
+// ============================================================
+// 宣言
+// ============================================================
+
+/// valによる宣言
+/// 唯一 newを右にとれる
+/// 不変であるので初期化子が必須
+/// module: o, func: o, stage: o
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ValDecl {
     pub pattern: ValLhs,
     pub ty: Option<FslType>,
-    pub init: Expr,
+    pub init: Box<Expr>,
 }
 
-/// `val x = ...` または `val (a, b, c) = ...`
+/// `val`左辺
+/// 単一の変数宣言と，タプルによる宣言がある
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ValLhs {
     Single(Ident),
     Tuple(Vec<Ident>),
 }
 
+/// regによる宣言
+/// module: o, func: x, stage: o
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Param {
+pub struct RegDecl {
     pub name: Ident,
-    /// 引数型は省略可（`def add(a, b, ci): Unit` のように上位スコープから流用される）
-    pub ty: Option<FslType>,
+    pub ty: FslType,
+    pub init: Option<Expr>,
 }
 
-// ============================================================
-// 型
-// ============================================================
-
-pub type FslType = Spanned<FslType_>;
-
+/// memによる宣言
+/// module: o, func: x, stage: x
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum FslType_ {
-    Unit,
-    Boolean,
-    /// `Bit(n)` の n は意味解析で評価する．構文段階では式のまま保持．
-    Bit(Box<Expr>),
-    Int,
-    String,
-    Array(Box<FslType>),
-    List(Box<FslType>),
-    Tuple(Vec<FslType>),
-    /// ユーザ定義型・モジュール名・trait名
-    Named(Ident),
+pub struct MemDecl {
+    pub name: Ident,
+    pub elem_ty: FslType,
+    pub size: Expr,
+    pub init: Vec<Expr>,
 }
 
-// ============================================================
-// 文
-// ============================================================
-
+/// inputによる宣言
+/// module: o, func: x, stage: x
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Block {
-    pub stmts: Vec<Spanned<Statement>>,
+pub struct InputDecl {
+    pub name: Ident,
+    pub ty: FslType,
 }
 
+/// outputによる宣言
+/// module: o, func: x, stage: x
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Statement {
-    Val(ValDecl),
-    /// `lhs := rhs` レジスタ・メモリ更新
-    RegAssign(Expr, Expr),
-    /// `lhs = rhs` 出力ポート割当
-    Assign(Expr, Expr),
-    /// `par { ... }` `seq { ... }` `any { ... }` `alt { ... }`
-    BlockKind(BlockKind, Block),
-    Generate(Ident, Vec<Expr>),
-    Relay(Ident, Vec<Expr>),
-    Finish,
-    Goto(Ident),
-    /// match 文・case 節含むので Statement と Expr の両方で構成可能
-    Expr(Expr),
+pub struct OutputDecl {
+    pub name: Ident,
+    pub ty: FslType,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Copy)]
-pub enum BlockKind {
-    Par,
-    Seq,
-    Any,
-    Alt,
+/// output def による宣言
+/// module: o, func: x, stage: x
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OutputFnDecl {
+    pub name: Ident,
+    pub params: Vec<Spanned<Param>>,
+    pub ret: FslType,
+}
+
+/// new によるインスタンス化
+/// module: o, func: x, stage: x (TODO)
+/// val ident = new module
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewInstance {
+    pub name: Ident,
+    pub module_name: Ident,
 }
 
 // ============================================================
