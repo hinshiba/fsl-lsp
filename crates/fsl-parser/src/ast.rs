@@ -361,3 +361,23 @@ pub enum Pattern {
     /// `case 0x00 =>` リテラル
     IntLit(String),
 }
+
+// ============================================================
+// 型
+// ============================================================
+
+pub type FslType = Spanned<FslType_>;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FslType_ {
+    Unit,
+    Boolean,
+    Bit(Box<Expr>),
+    Int,
+    String,
+    Array(Box<FslType>),
+    List(Box<FslType>),
+    Tuple(Vec<FslType>),
+    /// 複合型, モジュール, traitのいずれか
+    Named(Ident),
+}
