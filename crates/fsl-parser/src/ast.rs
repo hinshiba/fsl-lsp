@@ -4,7 +4,6 @@
 //! ノードはソース上の位置情報 `Span` を持つ．
 
 use chumsky::span::Spanned;
-use fsl_lexer::Span;
 
 pub type Ident = Spanned<String>;
 
