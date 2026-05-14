@@ -349,7 +349,6 @@ pub struct Case {
 pub struct MatchArm {
     pub pattern: Pattern,
     pub body: Expr,
-    pub span: Span,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
