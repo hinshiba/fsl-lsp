@@ -34,7 +34,8 @@ pub fn hover_at(result: &AnalysisResult, offset: usize) -> Option<HoverPayload> 
                 markdown: format_builtin(name),
                 range,
             }),
-            ResolvedTo::Unresolved => None,
+            // 継承メンバ・未解決は定義位置を持たないため hover しない
+            ResolvedTo::External | ResolvedTo::Unresolved => None,
         };
     }
     // 宣言識別子上のホバー

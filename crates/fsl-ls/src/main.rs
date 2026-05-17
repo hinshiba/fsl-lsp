@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use fsl_analyzer::AnalysisResult;
+use fsl_analyzer::{AnalysisResult, ModuleIndex};
 use line_index::LineIndex;
 use tokio::sync::RwLock;
 use tower_lsp::jsonrpc::Result;
@@ -19,6 +19,9 @@ mod definition;
 mod hover;
 mod on_change;
 mod pos;
+mod workspace;
+
+use workspace::{build_index, scan_fsl_files, workspace_roots};
 
 /// 文書ごとの解析キャッシュ
 pub struct DocumentState {
@@ -32,11 +35,30 @@ pub struct Backend {
     pub client: Client,
     /// URI ごとの最新解析状態
     pub docs: Arc<RwLock<HashMap<Url, DocumentState>>>,
+    /// ワークスペース内の全 `.fsl` ソース  開いていないファイルも含む
+    pub sources: Arc<RwLock<HashMap<Url, String>>>,
+    /// `sources` から構築したモジュール横断索引
+    pub index: Arc<RwLock<ModuleIndex>>,
 }
 
 #[tower_lsp::async_trait]
 impl LanguageServer for Backend {
-    async fn initialize(&self, _: InitializeParams) -> Result<InitializeResult> {
+    async fn initialize(&self, params: InitializeParams) -> Result<InitializeResult> {
+        // ワークスペース配下の .fsl を走査してモジュール索引を初期化する
+        {
+            let mut sources = self.sources.write().await;
+            for root in workspace_roots(&params) {
+                for path in scan_fsl_files(&root) {
+                    if let (Ok(text), Ok(url)) =
+                        (std::fs::read_to_string(&path), Url::from_file_path(&path))
+                    {
+                        sources.insert(url, text);
+                    }
+                }
+            }
+            *self.index.write().await = build_index(&sources);
+        }
+
         Ok(InitializeResult {
             capabilities: ServerCapabilities {
                 text_document_sync: Some(TextDocumentSyncCapability::Options(
@@ -118,6 +140,8 @@ async fn main() {
     let (service, socket) = LspService::new(|client| Backend {
         client,
         docs: Arc::new(RwLock::new(HashMap::new())),
+        sources: Arc::new(RwLock::new(HashMap::new())),
+        index: Arc::new(RwLock::new(ModuleIndex::default())),
     });
     Server::new(stdin, stdout, socket).serve(service).await;
 }

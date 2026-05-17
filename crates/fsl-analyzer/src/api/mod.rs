@@ -8,6 +8,8 @@ pub mod completion;
 pub mod definition;
 pub mod hover;
 
-pub use completion::{completions_at, CompletionList, BUILTIN_TYPES, KEYWORDS};
+pub use completion::{
+    completions_at, member_completions, CompletionList, BUILTIN_TYPES, KEYWORDS,
+};
 pub use definition::definition_at;
 pub use hover::{hover_at, HoverPayload};
