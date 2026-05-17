@@ -116,7 +116,7 @@
     },
     "keywords_control": {
       "name": "keyword.control.fsl",
-      "match": "\\b(if|else|match|case|par|seq|always|initial|generate|relay|finish|goto)\\b"
+      "match": "\\b(if|else|match|case|par|seq|any|alt|always|initial|generate|relay|finish|goto)\\b"
     },
     "keywords_declaration": {
       "name": "keyword.declaration.fsl",
