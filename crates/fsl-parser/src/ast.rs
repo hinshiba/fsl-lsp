@@ -99,14 +99,11 @@ pub struct StageDef {
     pub body: Vec<Spanned<StageItem>>,
 }
 
-/// stage 本体にはreg宣言, relayとfinishによるタスク処理, ステートマシンと実装が含まれる
+/// stage 本体に並ぶ要素
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StageItem {
     Reg(RegDecl),
-    Relay(Ident, Vec<Expr>),
-    Finish,
     State(StateDef),
-    Goto(Ident),
     Expr(Expr),
 }
 
@@ -242,7 +239,16 @@ pub enum Expr_ {
     /// `if (cond) then else else_`
     If(Box<Expr>, Box<Expr>, Option<Box<Expr>>),
 
+    // ---- stage ----
+    // if内等にも配置されるため exprだが，stage内のみ通用する
+    /// `generate <stage>(args)`  Unitを返す
     Generate(Ident, Vec<Expr>),
+    /// `relay <stage>(args)`  後段ステージへの中継  Unitを返す
+    Relay(Ident, Vec<Expr>),
+    /// `finish`  タスクの終了  Unitを返す
+    Finish,
+    /// `goto <state>`  ステート遷移  Unitを返す
+    Goto(Ident),
 
     // ---- 宣言と代入 ----
     // 普通はUnitを返す
@@ -264,11 +270,11 @@ pub enum Expr_ {
 
     /// `any { expr:Bool : expr[;] expr:Bool : expr[;] ... else: expr[;] }`
     /// Unitを返す
-    Any(Vec<Spanned<Case>>, Box<Expr>),
+    Any(Vec<Spanned<Case>>, Option<Box<Expr>>),
 
     /// `alt { expr:Bool : expr[;] expr:Bool : expr[;] ...  else: expr[;] }`
     /// 実行結果を返す
-    Alt(Vec<Spanned<Case>>, Box<Expr>),
+    Alt(Vec<Spanned<Case>>, Option<Box<Expr>>),
 
     /// `seq { expr expr ... }`
     /// Unitを返す
