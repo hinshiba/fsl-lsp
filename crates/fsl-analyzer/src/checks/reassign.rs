@@ -36,8 +36,8 @@ impl Check for ReassignCheck {
 
 fn walk_field(ctx: &AnalysisContext, diags: &mut Vec<Diagnostic>, f: &Field) {
     match f {
-        Field::Fn(f) => walk_block(ctx, diags, &f.body),
-        Field::Always(b) | Field::Initial(b) => walk_block(ctx, diags, b),
+        Field::Fn(f) => walk_expr(ctx, diags, &f.body),
+        Field::Always(b) | Field::Initial(b) => walk_expr(ctx, diags, b),
         Field::Stage(s) => {
             for it in &s.body {
                 walk_stage_item(ctx, diags, &it.inner);
@@ -49,61 +49,71 @@ fn walk_field(ctx: &AnalysisContext, diags: &mut Vec<Diagnostic>, f: &Field) {
 
 fn walk_stage_item(ctx: &AnalysisContext, diags: &mut Vec<Diagnostic>, si: &StageItem) {
     match si {
-        StageItem::State(st) => walk_stmt(ctx, diags, &st.body),
-        StageItem::Statement(s) => walk_stmt(ctx, diags, s),
-        _ => {}
+        StageItem::State(st) => walk_expr(ctx, diags, &st.body),
+        StageItem::Expr(e) => walk_expr(ctx, diags, e),
+        StageItem::Reg(_) => {}
     }
 }
 
-fn walk_block(ctx: &AnalysisContext, diags: &mut Vec<Diagnostic>, b: &Block) {
-    for s in &b.stmts {
-        walk_stmt(ctx, diags, &s.inner);
-    }
-}
-
-fn walk_stmt(ctx: &AnalysisContext, diags: &mut Vec<Diagnostic>, stmt: &Statement) {
-    match stmt {
-        Statement::Assign(lhs, _) => check_eq_assign(ctx, diags, lhs),
-        Statement::MemAssign(lhs, _) => check_reg_assign(ctx, diags, lhs),
-        Statement::BlockKind(_, b) => walk_block(ctx, diags, b),
-        Statement::Expr(e) => walk_blocks_in_expr(ctx, diags, e),
-        _ => {}
-    }
-}
-
-fn walk_blocks_in_expr(ctx: &AnalysisContext, diags: &mut Vec<Diagnostic>, e: &Expr) {
+/// 式を歩いて代入演算子と左辺シンボル種別の整合を検査する
+///
+/// `Block` 廃止により旧 `walk_block` / `walk_stmt` を統合した単一走査．
+fn walk_expr(ctx: &AnalysisContext, diags: &mut Vec<Diagnostic>, e: &Expr) {
     match &e.inner {
-        Expr_::Block(b) => walk_block(ctx, diags, b),
+        // `=` 出力ポート割当  /  `:=` reg/mem 更新
+        Expr_::PortAssign(lhs, rhs) => {
+            check_eq_assign(ctx, diags, lhs);
+            walk_expr(ctx, diags, rhs);
+        }
+        Expr_::MemAssign(lhs, rhs) => {
+            check_reg_assign(ctx, diags, lhs);
+            walk_expr(ctx, diags, rhs);
+        }
         Expr_::If(c, t, el) => {
-            walk_blocks_in_expr(ctx, diags, c);
-            walk_blocks_in_expr(ctx, diags, t);
+            walk_expr(ctx, diags, c);
+            walk_expr(ctx, diags, t);
             if let Some(x) = el {
-                walk_blocks_in_expr(ctx, diags, x);
+                walk_expr(ctx, diags, x);
             }
         }
         Expr_::Match(s, arms) => {
-            walk_blocks_in_expr(ctx, diags, s);
+            walk_expr(ctx, diags, s);
             for a in arms {
-                walk_blocks_in_expr(ctx, diags, &a.body);
+                walk_expr(ctx, diags, &a.inner.body);
+            }
+        }
+        Expr_::Any(cases, el) | Expr_::Alt(cases, el) => {
+            for c in cases {
+                walk_expr(ctx, diags, &c.inner.cond);
+                walk_expr(ctx, diags, &c.inner.body);
+            }
+            if let Some(x) = el {
+                walk_expr(ctx, diags, x);
             }
         }
         Expr_::Binary(_, l, r) => {
-            walk_blocks_in_expr(ctx, diags, l);
-            walk_blocks_in_expr(ctx, diags, r);
+            walk_expr(ctx, diags, l);
+            walk_expr(ctx, diags, r);
         }
-        Expr_::Unary(_, x) => walk_blocks_in_expr(ctx, diags, x),
-        Expr_::Tuple(xs) => {
+        Expr_::Unary(_, x) => walk_expr(ctx, diags, x),
+        Expr_::Tuple(xs) | Expr_::Block(xs) | Expr_::Seq(xs) | Expr_::Par(xs) => {
             for x in xs {
-                walk_blocks_in_expr(ctx, diags, x);
+                walk_expr(ctx, diags, x);
             }
         }
         Expr_::Call(c, args) => {
-            walk_blocks_in_expr(ctx, diags, c);
+            walk_expr(ctx, diags, c);
             for a in args {
-                walk_blocks_in_expr(ctx, diags, a);
+                walk_expr(ctx, diags, a);
             }
         }
-        Expr_::Field(r, _) => walk_blocks_in_expr(ctx, diags, r),
+        Expr_::Generate(_, args) | Expr_::Relay(_, args) => {
+            for a in args {
+                walk_expr(ctx, diags, a);
+            }
+        }
+        Expr_::ValDecl(v) => walk_expr(ctx, diags, &v.init),
+        Expr_::Field(r, _) => walk_expr(ctx, diags, r),
         _ => {}
     }
 }

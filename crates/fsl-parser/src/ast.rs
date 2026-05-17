@@ -186,11 +186,12 @@ pub struct OutputDecl {
 
 /// output def による宣言
 /// module: o, func: x, stage: x
+/// 戻り値型は省略可能
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OutputFnDecl {
     pub name: Ident,
     pub params: Vec<Spanned<Param>>,
-    pub ret: FslType,
+    pub ret: Option<FslType>,
 }
 
 /// new によるインスタンス化
@@ -363,8 +364,10 @@ pub enum Pattern {
     Wildcard,
     /// `case ADD =>` 識別子（定数または束縛）
     Ident(Ident),
-    /// `case 0x00 =>` リテラル
-    IntLit(String),
+    /// `case 100 =>` 整数リテラル
+    IntLit(u64),
+    /// `case 0x00 =>` ビットリテラル
+    BitLit(u64),
 }
 
 // ============================================================

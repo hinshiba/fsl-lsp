@@ -121,7 +121,7 @@ fn visit_field(t: &mut SymbolTable, scope: ScopeId, f: &Field, full: Span) {
             );
         }
         Field::OutputFn(d) => {
-            let ty = Some(TypeInfo::from_ast(&d.ret));
+            let ty = d.ret.as_ref().map(TypeInfo::from_ast);
             push_named_symbol(
                 t,
                 scope,
@@ -163,21 +163,15 @@ fn visit_field(t: &mut SymbolTable, scope: ScopeId, f: &Field, full: Span) {
                 .scopes
                 .new_scope(Some(scope), ScopeKind::Function, full.clone());
             push_params(t, fn_scope, &f.params);
-            for stmt in &f.body.stmts {
-                visit_stmt(t, fn_scope, &stmt.inner, to_range(stmt.span));
-            }
+            visit_body(t, fn_scope, &f.body);
         }
         Field::Always(b) => {
             let s = t.scopes.new_scope(Some(scope), ScopeKind::Always, full);
-            for stmt in &b.stmts {
-                visit_stmt(t, s, &stmt.inner, to_range(stmt.span));
-            }
+            visit_body(t, s, b);
         }
         Field::Initial(b) => {
             let s = t.scopes.new_scope(Some(scope), ScopeKind::Initial, full);
-            for stmt in &b.stmts {
-                visit_stmt(t, s, &stmt.inner, to_range(stmt.span));
-            }
+            visit_body(t, s, b);
         }
         Field::Stage(stage) => {
             push_named_symbol(
@@ -227,12 +221,10 @@ fn visit_stage_item(t: &mut SymbolTable, scope: ScopeId, si: &StageItem, full: S
                 None,
                 Mutability::Immutable,
             );
-            let s = t
-                .scopes
-                .new_scope(Some(scope), ScopeKind::State, full.clone());
-            visit_stmt(t, s, &state.body, full);
+            let s = t.scopes.new_scope(Some(scope), ScopeKind::State, full);
+            visit_body(t, s, &state.body);
         }
-        StageItem::RegDecl(r) => {
+        StageItem::Reg(r) => {
             let ty = Some(TypeInfo::from_ast(&r.ty));
             push_named_symbol(
                 t,
@@ -244,91 +236,101 @@ fn visit_stage_item(t: &mut SymbolTable, scope: ScopeId, si: &StageItem, full: S
                 Mutability::Reg,
             );
         }
-        StageItem::Mem(m) => {
-            let elem = TypeInfo::from_ast(&m.elem_ty);
-            let ty = Some(TypeInfo::Array(Box::new(elem)));
-            push_named_symbol(
-                t,
-                scope,
-                &m.name,
-                SymbolKind::Mem,
-                full,
-                ty,
-                Mutability::Reg,
-            );
-        }
-        StageItem::Val(v) => push_val(t, scope, v, full),
-        StageItem::Statement(stmt) => visit_stmt(t, scope, stmt, full),
+        // val 宣言・代入・制御フロー等はすべて式
+        StageItem::Expr(e) => visit_expr(t, scope, e),
     }
 }
 
 // ============================================================
-// 文と式 (子スコープと val 宣言のみを記録)
+// 式 (子スコープと val 宣言のみを記録)
 // ============================================================
 
-fn visit_stmt(t: &mut SymbolTable, scope: ScopeId, stmt: &Statement, full: Span) {
-    match stmt {
-        Statement::Val(v) => push_val(t, scope, v, full),
-        Statement::BlockKind(_, b) => visit_subblock(t, scope, b, full),
-        Statement::Expr(e) => visit_expr_for_blocks(t, scope, e),
-        Statement::MemAssign(_, rhs) | Statement::Assign(_, rhs) => {
-            visit_expr_for_blocks(t, scope, rhs)
+/// fn / always / initial / state の本体を解析する
+///
+/// 本体直下のブロックは新たなスコープを開かず，渡された `scope` に
+/// 直接 val 宣言を登録する  params と本体宣言を同一スコープに置くため
+fn visit_body(t: &mut SymbolTable, scope: ScopeId, body: &Expr) {
+    match &body.inner {
+        Expr_::Block(es) | Expr_::Seq(es) | Expr_::Par(es) => {
+            for e in es {
+                visit_expr(t, scope, e);
+            }
         }
-        _ => {}
+        _ => visit_expr(t, scope, body),
     }
 }
 
-fn visit_subblock(t: &mut SymbolTable, parent: ScopeId, b: &Block, span: Span) {
-    let s = t.scopes.new_scope(Some(parent), ScopeKind::Block, span);
-    for stmt in &b.stmts {
-        visit_stmt(t, s, &stmt.inner, to_range(stmt.span));
-    }
-}
-
-fn visit_expr_for_blocks(t: &mut SymbolTable, scope: ScopeId, e: &Expr) {
+/// 式を歩いて子スコープと val 宣言を記録する
+fn visit_expr(t: &mut SymbolTable, scope: ScopeId, e: &Expr) {
     let span = to_range(e.span);
     match &e.inner {
-        Expr_::Block(b) => visit_subblock(t, scope, b, span),
-        Expr_::If(c, then_, else_) => {
-            visit_expr_for_blocks(t, scope, c);
-            visit_expr_for_blocks(t, scope, then_);
+        // val 宣言をスコープに登録
+        Expr_::ValDecl(v) => push_val(t, scope, v, span),
+        // ブロック類は新たな子スコープを開く
+        Expr_::Block(es) | Expr_::Seq(es) | Expr_::Par(es) => {
+            let s = t.scopes.new_scope(Some(scope), ScopeKind::Block, span);
+            for x in es {
+                visit_expr(t, s, x);
+            }
+        }
+        Expr_::Any(cases, else_) | Expr_::Alt(cases, else_) => {
+            let s = t.scopes.new_scope(Some(scope), ScopeKind::Block, span);
+            for c in cases {
+                visit_expr(t, s, &c.inner.cond);
+                visit_expr(t, s, &c.inner.body);
+            }
             if let Some(x) = else_ {
-                visit_expr_for_blocks(t, scope, x);
+                visit_expr(t, s, x);
+            }
+        }
+        Expr_::If(c, then_, else_) => {
+            visit_expr(t, scope, c);
+            visit_expr(t, scope, then_);
+            if let Some(x) = else_ {
+                visit_expr(t, scope, x);
             }
         }
         Expr_::Match(scrut, arms) => {
-            visit_expr_for_blocks(t, scope, scrut);
+            visit_expr(t, scope, scrut);
             for arm in arms {
                 let s = t
                     .scopes
-                    .new_scope(Some(scope), ScopeKind::Match, arm.span.clone());
-                visit_expr_for_blocks(t, s, &arm.body);
+                    .new_scope(Some(scope), ScopeKind::Match, to_range(arm.span));
+                visit_expr(t, s, &arm.inner.body);
             }
         }
-        Expr_::Binary(_, l, r) => {
-            visit_expr_for_blocks(t, scope, l);
-            visit_expr_for_blocks(t, scope, r);
+        Expr_::Binary(_, l, r) | Expr_::PortAssign(l, r) | Expr_::MemAssign(l, r) => {
+            visit_expr(t, scope, l);
+            visit_expr(t, scope, r);
         }
-        Expr_::Unary(_, x) => visit_expr_for_blocks(t, scope, x),
+        Expr_::Unary(_, x) => visit_expr(t, scope, x),
         Expr_::Tuple(xs) => {
             for x in xs {
-                visit_expr_for_blocks(t, scope, x);
+                visit_expr(t, scope, x);
             }
         }
         Expr_::Call(c, args) => {
-            visit_expr_for_blocks(t, scope, c);
+            visit_expr(t, scope, c);
             for a in args {
-                visit_expr_for_blocks(t, scope, a);
+                visit_expr(t, scope, a);
             }
         }
-        Expr_::Field(root, _) => visit_expr_for_blocks(t, scope, root),
+        Expr_::Generate(_, args) | Expr_::Relay(_, args) => {
+            for a in args {
+                visit_expr(t, scope, a);
+            }
+        }
+        Expr_::Field(root, _) => visit_expr(t, scope, root),
         // 葉ノードはスコープを増やさない
         Expr_::Variable(_)
         | Expr_::IntLit(_)
+        | Expr_::BitLit(_)
         | Expr_::StringLit(_)
         | Expr_::Bool(_)
         | Expr_::Unit
         | Expr_::New(_)
+        | Expr_::Goto(_)
+        | Expr_::Finish
         | Expr_::Error => {}
     }
 }
@@ -367,7 +369,7 @@ fn push_val(t: &mut SymbolTable, scope: ScopeId, v: &ValDecl, full: Span) {
         }
     }
     // 初期化式内のブロックも歩く
-    visit_expr_for_blocks(t, scope, &v.init);
+    visit_expr(t, scope, &v.init);
 }
 
 fn push_params(t: &mut SymbolTable, scope: ScopeId, params: &[Spanned<Param>]) {

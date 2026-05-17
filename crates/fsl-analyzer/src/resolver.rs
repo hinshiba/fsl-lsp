@@ -55,8 +55,8 @@ fn walk_field(table: &mut SymbolTable, b: &Builtins, f: &Field) {
                 walk_expr(table, b, e);
             }
         }
-        Field::Fn(f) => walk_block(table, b, &f.body),
-        Field::Always(blk) | Field::Initial(blk) => walk_block(table, b, blk),
+        Field::Fn(f) => walk_expr(table, b, &f.body),
+        Field::Always(blk) | Field::Initial(blk) => walk_expr(table, b, blk),
         Field::Stage(s) => {
             for item in &s.body {
                 walk_stage_item(table, b, &item.inner);
@@ -74,51 +74,13 @@ fn walk_field(table: &mut SymbolTable, b: &Builtins, f: &Field) {
 
 fn walk_stage_item(table: &mut SymbolTable, b: &Builtins, si: &StageItem) {
     match si {
-        StageItem::State(s) => walk_stmt(table, b, &s.body),
-        StageItem::RegDecl(r) => {
+        StageItem::State(s) => walk_expr(table, b, &s.body),
+        StageItem::Reg(r) => {
             if let Some(init) = &r.init {
                 walk_expr(table, b, init);
             }
         }
-        StageItem::Mem(m) => {
-            walk_expr(table, b, &m.size);
-            for e in &m.init {
-                walk_expr(table, b, e);
-            }
-        }
-        StageItem::Val(v) => walk_expr(table, b, &v.init),
-        StageItem::Statement(s) => walk_stmt(table, b, s),
-    }
-}
-
-// ============================================================
-// 文
-// ============================================================
-
-fn walk_block(table: &mut SymbolTable, b: &Builtins, blk: &Block) {
-    for s in &blk.stmts {
-        walk_stmt(table, b, &s.inner);
-    }
-}
-
-fn walk_stmt(table: &mut SymbolTable, b: &Builtins, stmt: &Statement) {
-    match stmt {
-        Statement::Val(v) => walk_expr(table, b, &v.init),
-        Statement::MemAssign(lhs, rhs) | Statement::Assign(lhs, rhs) => {
-            walk_expr(table, b, lhs);
-            walk_expr(table, b, rhs);
-        }
-        Statement::BlockKind(_, blk) => walk_block(table, b, blk),
-        Statement::Generate(name, args) | Statement::Relay(name, args) => {
-            // 呼び出し対象 (stage 名) と引数を解決
-            push_path_ref(table, b, name);
-            for a in args {
-                walk_expr(table, b, a);
-            }
-        }
-        Statement::Goto(name) => push_path_ref(table, b, name),
-        Statement::Expr(e) => walk_expr(table, b, e),
-        Statement::Finish => {}
+        StageItem::Expr(e) => walk_expr(table, b, e),
     }
 }
 
@@ -126,6 +88,9 @@ fn walk_stmt(table: &mut SymbolTable, b: &Builtins, stmt: &Statement) {
 // 式
 // ============================================================
 
+/// 式を歩いて識別子参照を登録する
+///
+/// `Block` 廃止により旧 `walk_block` / `walk_stmt` を統合した単一走査．
 fn walk_expr(table: &mut SymbolTable, b: &Builtins, e: &Expr) {
     match &e.inner {
         Expr_::Variable(id) => push_path_ref(table, b, id),
@@ -137,12 +102,12 @@ fn walk_expr(table: &mut SymbolTable, b: &Builtins, e: &Expr) {
                 walk_expr(table, b, a);
             }
         }
-        Expr_::Binary(_, l, r) => {
+        Expr_::Binary(_, l, r) | Expr_::PortAssign(l, r) | Expr_::MemAssign(l, r) => {
             walk_expr(table, b, l);
             walk_expr(table, b, r);
         }
         Expr_::Unary(_, x) => walk_expr(table, b, x),
-        Expr_::Tuple(xs) => {
+        Expr_::Tuple(xs) | Expr_::Block(xs) | Expr_::Seq(xs) | Expr_::Par(xs) => {
             for x in xs {
                 walk_expr(table, b, x);
             }
@@ -157,13 +122,36 @@ fn walk_expr(table: &mut SymbolTable, b: &Builtins, e: &Expr) {
         Expr_::Match(scrut, arms) => {
             walk_expr(table, b, scrut);
             for arm in arms {
-                walk_expr(table, b, &arm.body);
+                walk_expr(table, b, &arm.inner.body);
             }
         }
-        Expr_::Block(blk) => walk_block(table, b, blk),
+        Expr_::Any(cases, else_) | Expr_::Alt(cases, else_) => {
+            for c in cases {
+                walk_expr(table, b, &c.inner.cond);
+                walk_expr(table, b, &c.inner.body);
+            }
+            if let Some(x) = else_ {
+                walk_expr(table, b, x);
+            }
+        }
+        Expr_::ValDecl(v) => walk_expr(table, b, &v.init),
+        // generate / relay は呼び出し対象 (stage 名) と引数を解決
+        Expr_::Generate(name, args) | Expr_::Relay(name, args) => {
+            push_path_ref(table, b, name);
+            for a in args {
+                walk_expr(table, b, a);
+            }
+        }
+        Expr_::Goto(name) => push_path_ref(table, b, name),
         // new <ModName> の解決はフェーズ3
         Expr_::New(_) => {}
-        Expr_::IntLit(_) | Expr_::StringLit(_) | Expr_::Bool(_) | Expr_::Unit | Expr_::Error => {}
+        Expr_::Finish
+        | Expr_::IntLit(_)
+        | Expr_::BitLit(_)
+        | Expr_::StringLit(_)
+        | Expr_::Bool(_)
+        | Expr_::Unit
+        | Expr_::Error => {}
     }
 }
 

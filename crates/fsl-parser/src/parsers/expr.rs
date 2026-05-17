@@ -1,9 +1,11 @@
 //! 式のパーサ
 //!
+//! `Block` 廃止により旧来の文もすべて式へ統合された．
 //! 主なパーサ構造
 //! 1. プリミティブ式  リテラル，識別子，括弧式，`if`，`new`，ブロック式
 //! 2. Pratt 演算子による中置・前置・後置の解析
 //! 3. 後置 `match { ... }`
+//! 4. 代入  `:=` / `=`  と，`val`/`seq`/`par` 等の文相当の式  block.rs
 
 use chumsky::{
     IterParser, Parser,
@@ -18,13 +20,19 @@ use chumsky::{
 use fsl_lexer::Token;
 
 use crate::{
-    BinaryOp, Block, Expr, Expr_, MatchArm, Statement, UnaryOp,
-    parsers::{RecBlock, RecExpr, atom::ident_def, block::stmt_def, pattern::pattern_def},
+    BinaryOp, Expr, Expr_, MatchArm, UnaryOp,
+    parsers::{
+        RecExpr,
+        atom::ident_def,
+        block::{block_def, control_def},
+        pattern::pattern_def,
+    },
 };
 
 /// 式パーサ
+///
+/// 再帰ハンドル `expr` を受け取り，自己再帰する式パーサの実体を構築する
 pub(super) fn expr_def<'tok, I>(
-    block: RecBlock<'tok, I>,
     expr: RecExpr<'tok, I>,
 ) -> impl Parser<'tok, I, Expr, extra::Err<Rich<'tok, Token>>> + Clone
 where
@@ -32,7 +40,11 @@ where
 {
     // ---- リテラル ----
     let int_lit = select! {
-        Token::IntLit(s) => Expr_::IntLit(s),
+        Token::IntLit(n) => Expr_::IntLit(n),
+    }
+    .spanned();
+    let bit_lit = select! {
+        Token::BitLit(n) => Expr_::BitLit(n),
     }
     .spanned();
     let str_lit = select! {
@@ -70,15 +82,8 @@ where
             }
         });
 
-    // ---- ブロック式 ----
-    let block_expr = block.clone().map_with(|b: Block, e| Spanned {
-        inner: Expr_::Block(b),
-        span: e.span(),
-    });
-
     // ---- if 式 ----
-    // then／else は単独式以外にブロックや制御文も来うる
-    let branch_body = then_or_else_branch(block.clone(), expr.clone());
+    // SCC 縮退により then／else の分岐部は単なる `expr` でよい
     let if_expr = just(Token::If)
         // 条件
         .ignore_then(
@@ -86,9 +91,9 @@ where
                 .delimited_by(just(Token::LParen), just(Token::RParen)),
         )
         // then
-        .then(branch_body.clone())
+        .then(expr.clone())
         // else
-        .then(just(Token::Else).ignore_then(branch_body.clone()).or_not())
+        .then(just(Token::Else).ignore_then(expr.clone()).or_not())
         .map(|((c, t), e_opt)| Expr_::If(Box::new(c), Box::new(t), e_opt.map(Box::new)))
         .spanned();
 
@@ -100,13 +105,14 @@ where
 
     let primary = choice((
         int_lit,
+        bit_lit,
         str_lit,
         true_lit,
         false_lit,
         if_expr,
         new_expr,
         paren_or_tuple,
-        block_expr,
+        block_def(expr.clone()),
         path_expr,
     ))
     .boxed();
@@ -141,7 +147,7 @@ where
                     span: e.span(),
                 },
             ),
-            // 前置 単項演算
+            // 前置  単項演算  `~` ビット否定 / `!` 論理否定 / `-` 単項マイナス
             prefix(
                 11,
                 just(Token::Tilde),
@@ -157,10 +163,21 @@ where
                 just(Token::Minus),
                 |_, rhs, e: &mut MapExtra<'_, '_, _, _>| mk_unary(UnaryOp::Neg, rhs, e.span()),
             ),
+            // 前置  リダクション演算  `&` AND / `|` OR / `^` XOR
+            prefix(
+                11,
+                just(Token::Amp),
+                |_, rhs, e: &mut MapExtra<'_, '_, _, _>| mk_unary(UnaryOp::ReducAnd, rhs, e.span()),
+            ),
             prefix(
                 11,
                 just(Token::Pipe),
-                |_, rhs, e: &mut MapExtra<'_, '_, _, _>| mk_unary(UnaryOp::RedOr, rhs, e.span()),
+                |_, rhs, e: &mut MapExtra<'_, '_, _, _>| mk_unary(UnaryOp::ReducOr, rhs, e.span()),
+            ),
+            prefix(
+                11,
+                just(Token::Caret),
+                |_, rhs, e: &mut MapExtra<'_, '_, _, _>| mk_unary(UnaryOp::ReducXor, rhs, e.span()),
             ),
             // 中置  `n # x` 符号拡張
             infix(
@@ -191,23 +208,21 @@ where
                 just(Token::PlusPlus),
                 |l, _, r, e: &mut MapExtra<'_, '_, _, _>| mk_bin(BinaryOp::Concat, l, r, e.span()),
             ),
-            // シフト
+            // シフト  `<<` 論理左 / `>>` 算術右 / `>>>` 論理右
             infix(
                 left(6),
                 just(Token::Shl),
-                |l, _, r, e: &mut MapExtra<'_, '_, _, _>| mk_bin(BinaryOp::Shl, l, r, e.span()),
+                |l, _, r, e: &mut MapExtra<'_, '_, _, _>| mk_bin(BinaryOp::Sll, l, r, e.span()),
             ),
             infix(
                 left(6),
                 just(Token::Shr),
-                |l, _, r, e: &mut MapExtra<'_, '_, _, _>| mk_bin(BinaryOp::Shr, l, r, e.span()),
+                |l, _, r, e: &mut MapExtra<'_, '_, _, _>| mk_bin(BinaryOp::Sra, l, r, e.span()),
             ),
             infix(
                 left(6),
                 just(Token::ShrLogical),
-                |l, _, r, e: &mut MapExtra<'_, '_, _, _>| {
-                    mk_bin(BinaryOp::ShrLogical, l, r, e.span())
-                },
+                |l, _, r, e: &mut MapExtra<'_, '_, _, _>| mk_bin(BinaryOp::Srl, l, r, e.span()),
             ),
             // `&`
             infix(
@@ -226,36 +241,38 @@ where
                 just(Token::Caret),
                 |l, _, r, e: &mut MapExtra<'_, '_, _, _>| mk_bin(BinaryOp::BitXor, l, r, e.span()),
             ),
-            // 比較
-            infix(
-                left(3),
-                just(Token::EqEq),
-                |l, _, r, e: &mut MapExtra<'_, '_, _, _>| mk_bin(BinaryOp::Eq, l, r, e.span()),
-            ),
-            infix(
-                left(3),
-                just(Token::NotEq),
-                |l, _, r, e: &mut MapExtra<'_, '_, _, _>| mk_bin(BinaryOp::Ne, l, r, e.span()),
-            ),
-            infix(
-                left(3),
-                just(Token::Lt),
-                |l, _, r, e: &mut MapExtra<'_, '_, _, _>| mk_bin(BinaryOp::Lt, l, r, e.span()),
-            ),
-            infix(
-                left(3),
-                just(Token::Le),
-                |l, _, r, e: &mut MapExtra<'_, '_, _, _>| mk_bin(BinaryOp::Le, l, r, e.span()),
-            ),
-            infix(
-                left(3),
-                just(Token::Gt),
-                |l, _, r, e: &mut MapExtra<'_, '_, _, _>| mk_bin(BinaryOp::Gt, l, r, e.span()),
-            ),
-            infix(
-                left(3),
-                just(Token::Ge),
-                |l, _, r, e: &mut MapExtra<'_, '_, _, _>| mk_bin(BinaryOp::Ge, l, r, e.span()),
+            // 比較  pratt 演算子タプルの最大長  26  に収めるため入れ子にする
+            (
+                infix(
+                    left(3),
+                    just(Token::EqEq),
+                    |l, _, r, e: &mut MapExtra<'_, '_, _, _>| mk_bin(BinaryOp::Eq, l, r, e.span()),
+                ),
+                infix(
+                    left(3),
+                    just(Token::NotEq),
+                    |l, _, r, e: &mut MapExtra<'_, '_, _, _>| mk_bin(BinaryOp::Ne, l, r, e.span()),
+                ),
+                infix(
+                    left(3),
+                    just(Token::Lt),
+                    |l, _, r, e: &mut MapExtra<'_, '_, _, _>| mk_bin(BinaryOp::Lt, l, r, e.span()),
+                ),
+                infix(
+                    left(3),
+                    just(Token::Le),
+                    |l, _, r, e: &mut MapExtra<'_, '_, _, _>| mk_bin(BinaryOp::Le, l, r, e.span()),
+                ),
+                infix(
+                    left(3),
+                    just(Token::Gt),
+                    |l, _, r, e: &mut MapExtra<'_, '_, _, _>| mk_bin(BinaryOp::Gt, l, r, e.span()),
+                ),
+                infix(
+                    left(3),
+                    just(Token::Ge),
+                    |l, _, r, e: &mut MapExtra<'_, '_, _, _>| mk_bin(BinaryOp::Ge, l, r, e.span()),
+                ),
             ),
             // 論理
             infix(
@@ -276,20 +293,13 @@ where
     let match_arm = just(Token::Case)
         .ignore_then(pattern_def())
         .then_ignore(just(Token::FatArrow))
-        .then(branch_body.clone())
-        .map_with(|(p, body), e| {
-            let s = e.span();
-            MatchArm {
-                pattern: p,
-                body,
-                span: s.start..s.end,
-            }
-        });
+        .then(expr.clone())
+        .map(|(pattern, body)| MatchArm { pattern, body })
+        .spanned();
 
-    let match_arms = just(Token::Semicolon)
-        .repeated()
-        .ignore_then(match_arm)
+    let match_arms = match_arm
         .separated_by(just(Token::Semicolon).repeated())
+        .allow_leading()
         .allow_trailing()
         .collect::<Vec<_>>()
         .delimited_by(just(Token::LBrace), just(Token::RBrace));
@@ -297,14 +307,43 @@ where
     let with_match = pratt_expr
         .foldl_with(
             just(Token::Match).ignore_then(match_arms).repeated(),
-            |lhs: Expr, arms: Vec<MatchArm>, e| Spanned {
+            |lhs: Expr, arms, e| Spanned {
                 inner: Expr_::Match(Box::new(lhs), arms),
                 span: e.span(),
             },
         )
         .boxed();
 
-    with_match
+    // ---- 代入  `lhs := rhs` / `lhs = rhs`  または式そのまま ----
+    let assign_or_expr = with_match
+        .then(
+            choice((
+                just(Token::ColonEq)
+                    .ignore_then(expr.clone())
+                    .map(|r| (true, r)),
+                just(Token::Eq)
+                    .ignore_then(expr.clone())
+                    .map(|r| (false, r)),
+            ))
+            .or_not(),
+        )
+        .map_with(|(lhs, opt), e| match opt {
+            // `:=` は記憶素子への代入
+            Some((true, rhs)) => Spanned {
+                inner: Expr_::MemAssign(Box::new(lhs), Box::new(rhs)),
+                span: e.span(),
+            },
+            // `=` は端子への代入
+            Some((false, rhs)) => Spanned {
+                inner: Expr_::PortAssign(Box::new(lhs), Box::new(rhs)),
+                span: e.span(),
+            },
+            None => lhs,
+        });
+
+    // `val`/`generate`/`seq`/`par`/`any`/`alt`/`relay`/`finish`/`goto` は
+    // いずれもキーワード先頭で代入式と曖昧にならないため先に試す
+    choice((control_def(expr.clone()), assign_or_expr)).boxed()
 }
 
 // ============================================================
@@ -323,52 +362,4 @@ fn mk_unary(op: UnaryOp, rhs: Expr, span: SimpleSpan) -> Expr {
         inner: Expr_::Unary(op, Box::new(rhs)),
         span,
     }
-}
-
-/// 分岐部  `if`-then/else や `match` の本体  を解析する
-///
-/// ブロック・式・`par`/`seq`/`any`/`alt` 制御文・`generate`/`relay`/
-/// `finish`/`goto` 等の文も式として受ける  文として解析した場合は
-/// 単一文ブロックの式 `Expr_::Block(Block { stmts: vec![s] })` に格上げする
-fn then_or_else_branch<'tok, I>(
-    block: RecBlock<'tok, I>,
-    expr: RecExpr<'tok, I>,
-) -> impl Parser<'tok, I, Expr, extra::Err<Rich<'tok, Token>>> + Clone
-where
-    I: ValueInput<'tok, Token = Token, Span = SimpleSpan>,
-{
-    // ブロックは Expr_::Block で式に格上げ
-    let block_branch = block.clone().map_with(|b: Block, e| Spanned {
-        inner: Expr_::Block(b),
-        span: e.span(),
-    });
-
-    // 制御文・宣言文の先頭キーワードを `rewind` で覗き見し
-    // それらが現れたときに限り `stmt_def` を呼んで Stmt を消費する
-    // それ以外の場合は通常の式  `expr`  にフォールバックする
-    // この順番でないと `assign_or_expr` がほぼ何でも食ってしまう
-    let stmt_keyword = select! {
-        Token::Par => (),
-        Token::Seq => (),
-        Token::Any => (),
-        Token::Alt => (),
-        Token::Val => (),
-        Token::Generate => (),
-        Token::Relay => (),
-        Token::Finish => (),
-        Token::Goto => (),
-    };
-    let stmt_branch = stmt_keyword
-        .rewind()
-        .ignore_then(stmt_def(block.clone(), expr.clone()))
-        .map_with(|s: Statement, e| {
-            let span = e.span();
-            let stmt = Spanned { inner: s, span };
-            Spanned {
-                inner: Expr_::Block(Block { stmts: vec![stmt] }),
-                span,
-            }
-        });
-
-    choice((stmt_branch, block_branch, expr))
 }

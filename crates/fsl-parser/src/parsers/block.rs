@@ -1,82 +1,56 @@
-//! ブロックと文のパーサ
+//! ブロックと制御フロー式のパーサ
 //!
-//! `Block` は `Spanned<Statement>` の列で構成される
-//! 文の種類は val 宣言・代入・ブロック種別文・generate/relay/finish/goto・
-//! 単独の式  式文 を含む
+//! brace ブロック `{ ... }` と，`seq`/`par`/`any`/`alt` および
+//! `val`/`generate`/`relay`/`finish`/`goto` といった文相当の式
 
 use chumsky::{
     IterParser, Parser,
     error::Rich,
     extra,
     input::ValueInput,
-    primitive::{choice, just},
-    select,
-    span::SimpleSpan,
+    primitive::{choice, just, none_of},
+    recovery::via_parser,
+    span::{SimpleSpan, Spanned},
 };
 use fsl_lexer::Token;
 
 use crate::{
-    Block, BlockKind, Statement,
-    parsers::{RecBlock, RecExpr, atom::ident_def, valdecl::val_decl_def},
+    Case, Expr, Expr_,
+    parsers::{RecExpr, atom::ident_def, valdecl::val_decl_def},
 };
 
-/// 各種命令の列
+/// brace ブロック `{ expr* }`
 ///
-/// `block` と `expr` は呼び出し側で `Recursive::declare()` して
-/// 渡される未定義ハンドル
+/// 最後の式の値を返す式 `Expr_::Block` として解釈する
 pub(super) fn block_def<'tok, I>(
-    block: RecBlock<'tok, I>,
     expr: RecExpr<'tok, I>,
-) -> impl Parser<'tok, I, Block, extra::Err<Rich<'tok, Token>>> + Clone
+) -> impl Parser<'tok, I, Expr, extra::Err<Rich<'tok, Token>>> + Clone
 where
     I: ValueInput<'tok, Token = Token, Span = SimpleSpan>,
 {
-    let stmt = stmt_def(block.clone(), expr.clone());
-
-    // `Block` 本体  `{ stmt; stmt; ... }`
-    // FSL の文末セミコロンは任意であり区切りとしても省略できる
-    // `separated_by` の区切りを「0 個以上のセミコロン」にして
-    // 先頭・末尾のセミコロンも許容させる
-    let body = stmt
-        .clone()
-        .spanned()
-        .separated_by(just(Token::Semicolon).repeated())
-        .allow_leading()
-        .allow_trailing()
-        .collect();
-
-    body.delimited_by(just(Token::LBrace), just(Token::RBrace))
-        .map(|stmts| Block { stmts })
+    brace_seq(expr)
+        .map_with(|exprs, e| Spanned {
+            inner: Expr_::Block(exprs),
+            span: e.span(),
+        })
         // `Recursive::define` は parser に Clone 境界を要求する
-        // `impl Parser` は Clone を露出しないため
-        // `.boxed()`  Rc<dyn Parser>  に包んで Clone 可能にする
+        // `impl Parser` は Clone を露出しないため `.boxed()` で包む
         .boxed()
 }
 
-/// 文 1 件のパーサ
+/// 文相当の式  代入式と曖昧にならないキーワード先頭の式の集合
 ///
-/// 戻り値は `Statement`  span 情報は呼出側で付与する
-pub(super) fn stmt_def<'tok, I>(
-    block: RecBlock<'tok, I>,
+/// `val` 宣言・`generate`/`relay`/`finish`/`goto`・`seq`/`par`/`any`/`alt`
+pub(super) fn control_def<'tok, I>(
     expr: RecExpr<'tok, I>,
-) -> impl Parser<'tok, I, Statement, extra::Err<Rich<'tok, Token>>> + Clone
+) -> impl Parser<'tok, I, Expr, extra::Err<Rich<'tok, Token>>> + Clone
 where
     I: ValueInput<'tok, Token = Token, Span = SimpleSpan>,
 {
-    // par/seq/any/alt ブロック  block を再帰参照する
-    let block_kind_stmt = select!(
-        Token::Par => BlockKind::Par,
-        Token::Seq => BlockKind::Seq,
-        Token::Any => BlockKind::Any,
-        Token::Alt => BlockKind::Alt,
-    )
-    .then(block.clone())
-    .map(|(k, b)| Statement::BlockKind(k, b));
+    // val 宣言式
+    let val = val_decl_def(expr.clone()).map(Expr_::ValDecl).spanned();
 
-    // val 宣言文
-    let val_stmt = val_decl_def(expr.clone()).map(Statement::Val);
-
-    // 引数列  `(e, e, ...)`
+    // 引数列 `(e, e, ...)`
     let arg_list = expr
         .clone()
         .separated_by(just(Token::Comma))
@@ -84,52 +58,127 @@ where
         .collect()
         .delimited_by(just(Token::LParen), just(Token::RParen));
 
-    // generate / relay
-    let generate_stmt = just(Token::Generate)
+    // generate / relay  ステージ起動
+    let generate = just(Token::Generate)
         .ignore_then(ident_def())
         .then(arg_list.clone())
-        .map(|(target, args)| Statement::Generate(target, args));
-
-    let relay_stmt = just(Token::Relay)
+        .map(|(target, args)| Expr_::Generate(target, args))
+        .spanned();
+    let relay = just(Token::Relay)
         .ignore_then(ident_def())
         .then(arg_list)
-        .map(|(target, args)| Statement::Relay(target, args));
+        .map(|(target, args)| Expr_::Relay(target, args))
+        .spanned();
 
     // finish / goto
-    let finish_stmt = just(Token::Finish).map(|_| Statement::Finish);
-    let goto_stmt = just(Token::Goto)
+    let finish = just(Token::Finish).map(|_| Expr_::Finish).spanned();
+    let goto = just(Token::Goto)
         .ignore_then(ident_def())
-        .map(|target| Statement::Goto(target));
+        .map(Expr_::Goto)
+        .spanned();
 
-    // 式または代入
-    // `lhs := rhs`  `lhs = rhs`  またはそのまま式文
-    let assign_or_expr = expr
-        .clone()
-        .then(
-            choice((
-                just(Token::ColonEq)
-                    .ignore_then(expr.clone())
-                    .map(|r| (true, r)),
-                just(Token::Eq)
-                    .ignore_then(expr.clone())
-                    .map(|r| (false, r)),
-            ))
-            .or_not(),
-        )
-        .map(|(lhs, opt)| match opt {
-            Some((true, rhs)) => Statement::MemAssign(lhs, rhs),
-            Some((false, rhs)) => Statement::Assign(lhs, rhs),
-            None => Statement::Expr(lhs),
+    // seq / par  `{ expr* }` を順次・並列実行する式
+    let seq = just(Token::Seq)
+        .ignore_then(brace_seq(expr.clone()))
+        .map_with(|exprs, e| Spanned {
+            inner: Expr_::Seq(exprs),
+            span: e.span(),
+        });
+    let par = just(Token::Par)
+        .ignore_then(brace_seq(expr.clone()))
+        .map_with(|exprs, e| Spanned {
+            inner: Expr_::Par(exprs),
+            span: e.span(),
         });
 
-    choice((
-        val_stmt,
-        block_kind_stmt,
-        generate_stmt,
-        relay_stmt,
-        finish_stmt,
-        goto_stmt,
-        assign_or_expr,
-    ))
-    .boxed()
+    // any / alt  `{ cond : body ... else : body }`
+    let any = just(Token::Any)
+        .ignore_then(cases(expr.clone()))
+        .map_with(|(arms, els), e| Spanned {
+            inner: Expr_::Any(arms, els.map(Box::new)),
+            span: e.span(),
+        });
+    let alt = just(Token::Alt)
+        .ignore_then(cases(expr.clone()))
+        .map_with(|(arms, els), e| Spanned {
+            inner: Expr_::Alt(arms, els.map(Box::new)),
+            span: e.span(),
+        });
+
+    choice((val, generate, relay, finish, goto, seq, par, any, alt)).boxed()
+}
+
+// ============================================================
+// 局所ヘルパー
+// ============================================================
+
+/// `{ expr* }`  式列を `Vec<Expr>` として返す
+///
+/// FSL の文末セミコロンは任意であり区切りとしても省略できるため
+/// 区切りを0個以上のセミコロンとし，先頭・末尾も許容する．
+fn brace_seq<'tok, I>(
+    expr: RecExpr<'tok, I>,
+) -> impl Parser<'tok, I, Vec<Expr>, extra::Err<Rich<'tok, Token>>> + Clone
+where
+    I: ValueInput<'tok, Token = Token, Span = SimpleSpan>,
+{
+    // 各式は失敗時に Expr_::Error へ復旧し，後続の式の解析を続行する
+    expr.clone()
+        .recover_with(via_parser(expr_recovery(expr)))
+        .separated_by(just(Token::Semicolon).repeated())
+        .allow_leading()
+        .allow_trailing()
+        .collect()
+        .delimited_by(just(Token::LBrace), just(Token::RBrace))
+}
+
+/// `{ cond : body ... [else : body] }`  any/alt の本体
+fn cases<'tok, I>(
+    expr: RecExpr<'tok, I>,
+) -> impl Parser<'tok, I, (Vec<Spanned<Case>>, Option<Expr>), extra::Err<Rich<'tok, Token>>> + Clone
+where
+    I: ValueInput<'tok, Token = Token, Span = SimpleSpan>,
+{
+    // 通常のケース  `cond : body`
+    let case = expr
+        .clone()
+        .then_ignore(just(Token::Colon))
+        .then(expr.clone())
+        .map(|(cond, body)| Case { cond, body })
+        .spanned();
+
+    // 既定ケース  `else : body`
+    let else_arm = just(Token::Else)
+        .ignore_then(just(Token::Colon))
+        .ignore_then(expr.clone());
+
+    case.separated_by(just(Token::Semicolon).repeated())
+        .allow_leading()
+        .allow_trailing()
+        .collect()
+        .then(else_arm.or_not())
+        .delimited_by(just(Token::LBrace), just(Token::RBrace))
+}
+
+/// 式の解析失敗からの復旧パーサ
+///
+/// 式として解釈できないトークンを，次に式が始まる位置まで読み飛ばして
+/// `Expr_::Error` を生成する．`expr` 自体を先読みに使うため，識別子で
+/// 始まる代入・呼出を読み過ぎず，誤りの後ろの正常な式を取りこぼさない．
+/// `}` と `;` はブロック区切りとして消費せず上位に残す．
+fn expr_recovery<'tok, I>(
+    expr: RecExpr<'tok, I>,
+) -> impl Parser<'tok, I, Expr, extra::Err<Rich<'tok, Token>>> + Clone
+where
+    I: ValueInput<'tok, Token = Token, Span = SimpleSpan>,
+{
+    none_of([Token::RBrace, Token::Semicolon])
+        .and_is(expr.not())
+        .repeated()
+        .at_least(1)
+        .collect::<Vec<_>>()
+        .map_with(|_, e| Spanned {
+            inner: Expr_::Error,
+            span: e.span(),
+        })
 }

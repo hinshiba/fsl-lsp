@@ -26,11 +26,13 @@ where
     let wildcard = select! {
         Token::Ident(s) if s == "_" => Pattern::Wildcard,
     };
-    let int_pat = select! {
-        Token::IntLit(s) => Pattern::IntLit(s),
+    // 整数リテラルとビットリテラルをそれぞれのパターンへ
+    let lit_pat = select! {
+        Token::IntLit(n) => Pattern::IntLit(n),
+        Token::BitLit(n) => Pattern::BitLit(n),
     };
     let id_pat = select! {
         Token::Ident(s) = e => Pattern::Ident(Spanned { inner: s, span: e.span() }),
     };
-    choice((wildcard, int_pat, id_pat))
+    choice((wildcard, lit_pat, id_pat))
 }

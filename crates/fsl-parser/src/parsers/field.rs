@@ -1,38 +1,38 @@
+//! モジュール／トレイト本体に並ぶフィールドのパーサ
+
 use chumsky::{
     IterParser, Parser,
     error::Rich,
     extra,
     input::ValueInput,
-    primitive::{choice, just},
+    primitive::{any, choice, just, none_of, one_of},
+    recovery::via_parser,
     span::{SimpleSpan, Spanned},
 };
 use fsl_lexer::Token;
 
 use crate::{
-    Block, CompositeDef, CompositeField, Expr, Field, FnBodyKind, FnDef, Ident, NewInstance,
-    OutputFnDecl, Param, PortDecl, StageDef, StageItem, StateDef, ValDecl, ValLhs,
+    CompositeDef, CompositeField, Expr, Field, FnDef, Ident, InputDecl, NewInstance, OutputDecl,
+    OutputFnDecl, Param, StageDef, StageItem, StateDef, ValDecl, ValLhs,
     parsers::{
-        RecBlock, RecExpr,
+        RecExpr,
         atom::ident_def,
-        block::stmt_def,
-        block_and_expr,
+        block::block_def,
         typedef::type_def,
-        valdecl::{mem_def, reg_def, val_decl_def, val_tuple_def},
+        valdecl::{mem_def, reg_def, val_tuple_def},
     },
 };
 
 /// モジュール／トレイト本体に並ぶフィールド列
 ///
-/// Block と Expr の相互再帰ハンドルをここで一度だけ作って
-/// 必要な子パーサに `.clone()` で配る  各フィールドはこの一組の
-/// 再帰パーサを共有するため，深いネストでも一貫して同じパーサが走る
-pub(super) fn fields_def<'tok, I>()
--> impl Parser<'tok, I, Vec<Spanned<Field>>, extra::Err<Rich<'tok, Token>>>
+/// `expr` の再帰ハンドルを受け取り，必要な子パーサに `.clone()` で配る．
+/// 各フィールドは失敗時に `Field::Error` へ復旧し，後続フィールドの解析を続ける．
+pub(super) fn fields_def<'tok, I>(
+    expr: RecExpr<'tok, I>,
+) -> impl Parser<'tok, I, Vec<Spanned<Field>>, extra::Err<Rich<'tok, Token>>>
 where
     I: ValueInput<'tok, Token = Token, Span = SimpleSpan>,
 {
-    let (block, expr) = block_and_expr::<'tok, I>();
-
     let field = choice((
         // 実質的にコンストラクタ宣言
         input_def().map(Field::Input),
@@ -42,26 +42,27 @@ where
         mem_def(expr.clone()).map(Field::Mem),
         val_or_instance_def(expr.clone()),
         // メソッド
-        fn_def(block.clone(), expr.clone()).map(Field::Fn),
-        stage_def(block.clone(), expr.clone()).map(Field::Stage),
+        fn_def(expr.clone()).map(Field::Fn),
+        stage_def(expr.clone()).map(Field::Stage),
         // その他ブロック
-        always_def(block.clone()).map(Field::Always),
-        initial_def(block.clone()).map(Field::Initial),
+        always_def(expr.clone()).map(Field::Always),
+        initial_def(expr.clone()).map(Field::Initial),
         // typeによる複合型宣言
         composite_def().map(Field::Composite),
-    ));
+    ))
+    .map_with(|f, e| Spanned {
+        inner: f,
+        span: e.span(),
+    });
 
     field
-        .map_with(|f, e| Spanned {
-            inner: f,
-            span: e.span(),
-        })
+        .recover_with(via_parser(field_recovery()))
         .repeated()
         .collect()
 }
 
 /// 入力ポート宣言: `input name: T`
-pub(super) fn input_def<'tok, I>() -> impl Parser<'tok, I, PortDecl, extra::Err<Rich<'tok, Token>>>
+pub(super) fn input_def<'tok, I>() -> impl Parser<'tok, I, InputDecl, extra::Err<Rich<'tok, Token>>>
 where
     I: ValueInput<'tok, Token = Token, Span = SimpleSpan>,
 {
@@ -70,7 +71,7 @@ where
         .ignore_then(ident_def())
         // 型
         .then(just(Token::Colon).ignore_then(type_def()))
-        .map(|(name, ty)| PortDecl { name, ty })
+        .map(|(name, ty)| InputDecl { name, ty })
 }
 
 /// 出力アイテム: `output name: T` または `output def name(params): T`
@@ -80,58 +81,36 @@ pub(super) fn output_def<'tok, I>() -> impl Parser<'tok, I, Field, extra::Err<Ri
 where
     I: ValueInput<'tok, Token = Token, Span = SimpleSpan>,
 {
-    // 出力関数
+    // 出力関数  戻り値型は省略可能
     let output_fn = just(Token::Def)
         // 関数名
         .ignore_then(ident_def())
         // パラメータ列
         .then(params_def())
         // 型
-        .then(just(Token::Colon).ignore_then(type_def()))
+        .then(just(Token::Colon).ignore_then(type_def()).or_not())
         .map(|((name, params), ret)| Field::OutputFn(OutputFnDecl { name, params, ret }));
 
     // 出力ポート
     let output_port = ident_def()
         // ポート名
         .then(just(Token::Colon).ignore_then(type_def()))
-        .map(|(name, ty)| Field::Output(PortDecl { name, ty }));
+        .map(|(name, ty)| Field::Output(OutputDecl { name, ty }));
 
     // 関数はdefが来るという点で曖昧さがすぐに解消できるので先に試みる
     just(Token::Output).ignore_then(choice((output_fn, output_port)))
 }
 
-/// 関数定義: `[private] def [recv.]name(params)[: T] (= body | seq block | par block)`
+/// 関数定義: `[private] def [recv.]name(params)[: T] (= expr | seq block | par block)`
 /// FSL チュートリアル 1.5.4 p60にrecv.の用法あり
-///
-/// 再帰ハンドラを外から注入
 pub(super) fn fn_def<'tok, I>(
-    block: RecBlock<'tok, I>,
     expr: RecExpr<'tok, I>,
 ) -> impl Parser<'tok, I, FnDef, extra::Err<Rich<'tok, Token>>>
 where
     I: ValueInput<'tok, Token = Token, Span = SimpleSpan>,
 {
-    // 単一式は擬似的な単文ブロックに昇格する
-    // Spanned<Statement> を作るため map_with で span を取る
-    let expr_body = expr.clone().map_with(|e, info| Block {
-        stmts: vec![Spanned {
-            inner: crate::Statement::Expr(e),
-            span: info.span(),
-        }],
-    });
-
-    // 関数は = {block}, = expression, seq {block}, par {block}をとる
-    let body = choice((
-        just(Token::Eq)
-            .ignore_then(choice((block.clone(), expr_body)))
-            .map(|b| (FnBodyKind::Expr, b)),
-        just(Token::Seq)
-            .ignore_then(block.clone())
-            .map(|b| (FnBodyKind::Seq, b)),
-        just(Token::Par)
-            .ignore_then(block.clone())
-            .map(|b| (FnBodyKind::Par, b)),
-    ));
+    // `= expr` の `=` は任意  省略時は `seq`/`par` ブロック式が直接来る
+    let body = just(Token::Eq).or_not().ignore_then(expr);
 
     // 内部関数か
     just(Token::Private)
@@ -147,56 +126,52 @@ where
         .then(just(Token::Colon).ignore_then(type_def()).or_not())
         // 本体
         .then(body)
-        .map(
-            |(((((priv_kw, first), recv_opt), params), ret), (body_kind, body))| {
-                // 2回目のidentがあるかどうかで分岐
-                let (receiver, name) = match recv_opt {
-                    Some(real) => (Some(first), real),
-                    None => (None, first),
-                };
-                FnDef {
-                    is_private: priv_kw.is_some(),
-                    receiver,
-                    name,
-                    params,
-                    ret,
-                    body_kind,
-                    body,
-                }
-            },
-        )
+        .map(|(((((priv_kw, first), recv_opt), params), ret), body)| {
+            // 2回目のidentがあるかどうかで分岐
+            let (receiver, name) = match recv_opt {
+                Some(real) => (Some(first), real),
+                None => (None, first),
+            };
+            FnDef {
+                is_private: priv_kw.is_some(),
+                receiver,
+                name,
+                params,
+                ret,
+                body,
+            }
+        })
 }
 
-/// `always { block }`
+/// `always { ... }`  本体は brace ブロック式
 pub(super) fn always_def<'tok, I>(
-    block: RecBlock<'tok, I>,
-) -> impl Parser<'tok, I, Block, extra::Err<Rich<'tok, Token>>>
+    expr: RecExpr<'tok, I>,
+) -> impl Parser<'tok, I, Expr, extra::Err<Rich<'tok, Token>>>
 where
     I: ValueInput<'tok, Token = Token, Span = SimpleSpan>,
 {
-    just(Token::Always).ignore_then(block)
+    just(Token::Always).ignore_then(block_def(expr))
 }
 
-/// `initial { block }`
+/// `initial { ... }`  本体は brace ブロック式
 pub(super) fn initial_def<'tok, I>(
-    block: RecBlock<'tok, I>,
-) -> impl Parser<'tok, I, Block, extra::Err<Rich<'tok, Token>>>
+    expr: RecExpr<'tok, I>,
+) -> impl Parser<'tok, I, Expr, extra::Err<Rich<'tok, Token>>>
 where
     I: ValueInput<'tok, Token = Token, Span = SimpleSpan>,
 {
-    just(Token::Initial).ignore_then(block)
+    just(Token::Initial).ignore_then(block_def(expr))
 }
 
 /// stage 定義: `stage name(params) { stage_items }`
 pub(super) fn stage_def<'tok, I>(
-    block: RecBlock<'tok, I>,
     expr: RecExpr<'tok, I>,
 ) -> impl Parser<'tok, I, StageDef, extra::Err<Rich<'tok, Token>>>
 where
     I: ValueInput<'tok, Token = Token, Span = SimpleSpan>,
 {
-    // ステージ本体  block 同様に文末・先頭セミコロンを任意で許容する
-    let body = stage_item_def(block.clone(), expr.clone())
+    // ステージ本体  brace ブロック同様に文末・先頭セミコロンを任意で許容する
+    let body = stage_item_def(expr.clone())
         .spanned()
         .separated_by(just(Token::Semicolon).repeated())
         .allow_leading()
@@ -238,7 +213,7 @@ where
 
 /// `val pat[: T] = (new ModName | expr)`
 ///
-/// 単独識別子に対する `new` のみ `Field::Instance` に振り分け，他は `Field::Val` とする．
+/// 単独識別子に対する `new` のみ `Field::NewInstance` に振り分け，他は `Field::Val` とする．
 pub(super) fn val_or_instance_def<'tok, I>(
     expr: RecExpr<'tok, I>,
 ) -> impl Parser<'tok, I, Field, extra::Err<Rich<'tok, Token>>>
@@ -259,7 +234,7 @@ where
                 Field::Val(ValDecl {
                     pattern: ValLhs::Tuple(lhs),
                     ty: None,
-                    init: e,
+                    init: Box::new(e),
                 })
             }),
         // val ident =
@@ -277,8 +252,8 @@ where
             .map(|((ident, ty), rhs)| match rhs {
                 ValRhs::Expr(e) => Field::Val(ValDecl {
                     pattern: ValLhs::Single(ident),
-                    ty: ty,
-                    init: e,
+                    ty,
+                    init: Box::new(e),
                 }),
                 ValRhs::Instance(i) => Field::NewInstance(NewInstance {
                     name: ident,
@@ -321,27 +296,23 @@ where
 
 /// stage 本体に出現する1要素
 ///
-/// `state` 定義  `reg`/`mem`/`val` 宣言  およびステージ内の制御文が混在する
+/// `state` 定義  `reg` 宣言  およびその他の式  `val`/`par`/`relay` 等
 fn stage_item_def<'tok, I>(
-    block: RecBlock<'tok, I>,
     expr: RecExpr<'tok, I>,
 ) -> impl Parser<'tok, I, StageItem, extra::Err<Rich<'tok, Token>>>
 where
     I: ValueInput<'tok, Token = Token, Span = SimpleSpan>,
 {
     choice((
-        state_def(block.clone(), expr.clone()).map(StageItem::State),
-        reg_def(expr.clone()).map(StageItem::RegDecl),
-        mem_def(expr.clone()).map(StageItem::Mem),
-        val_decl_def(expr.clone()).map(StageItem::Val),
-        // それ以外は単独の文として stage に組み込む
-        stmt_def(block.clone(), expr.clone()).map(StageItem::Statement),
+        state_def(expr.clone()).map(StageItem::State),
+        reg_def(expr.clone()).map(StageItem::Reg),
+        // val 宣言・代入・relay/finish/goto・par/seq/any/alt はすべて式
+        expr.map(StageItem::Expr),
     ))
 }
 
-/// stage 内の state 定義: `state name <stmt>`
+/// stage 内の state 定義: `state name <expr>`
 fn state_def<'tok, I>(
-    block: RecBlock<'tok, I>,
     expr: RecExpr<'tok, I>,
 ) -> impl Parser<'tok, I, StateDef, extra::Err<Rich<'tok, Token>>>
 where
@@ -350,7 +321,41 @@ where
     just(Token::State)
         // ステート名
         .ignore_then(ident_def())
-        // 本体  通常は par/seq/any/alt ブロック文だが任意の文を許容する
-        .then(stmt_def(block, expr))
+        // 本体  通常は par/seq/any/alt ブロック式
+        .then(expr)
         .map(|(name, body)| StateDef { name, body })
+}
+
+/// フィールドの解析失敗からの復旧パーサ
+///
+/// 先頭の不正トークンを 1 つ消費し，次のフィールド開始キーワードまたは
+/// `}` の手前まで読み飛ばして `Field::Error` を生成する．
+fn field_recovery<'tok, I>()
+-> impl Parser<'tok, I, Spanned<Field>, extra::Err<Rich<'tok, Token>>> + Clone
+where
+    I: ValueInput<'tok, Token = Token, Span = SimpleSpan>,
+{
+    // 次のフィールド開始となりうるトークン  ここまでで読み飛ばしを止める
+    let sync = one_of([
+        Token::Input,
+        Token::Output,
+        Token::Reg,
+        Token::Mem,
+        Token::Val,
+        Token::Def,
+        Token::Private,
+        Token::Stage,
+        Token::Always,
+        Token::Initial,
+        Token::Type,
+        Token::RBrace,
+    ]);
+
+    // `}` は消費しない  本体の閉じ括弧として上位に残す
+    none_of([Token::RBrace])
+        .ignore_then(any().and_is(sync.not()).repeated().collect::<Vec<_>>())
+        .map_with(|_, e| Spanned {
+            inner: Field::Error,
+            span: e.span(),
+        })
 }

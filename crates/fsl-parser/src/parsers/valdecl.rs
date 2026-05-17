@@ -93,7 +93,11 @@ where
         .then(just(Token::Colon).ignore_then(type_def()).or_not())
         .then_ignore(just(Token::Eq))
         .then(expr.clone())
-        .map(|((pattern, ty), init)| ValDecl { pattern, ty, init })
+        .map(|((pattern, ty), init)| ValDecl {
+            pattern,
+            ty,
+            init: Box::new(init),
+        })
 }
 
 /// タプル宣言 val (a, b, c) = (1, 2, 3) 式
