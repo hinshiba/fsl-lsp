@@ -392,6 +392,20 @@ mod tests {
         );
     }
 
+    /// 閉じ `}` を欠く編集途中のソースでもスコープ内シンボルが補完される
+    #[test]
+    fn completions_available_in_unclosed_module() {
+        let src = "module M {\n  reg count: Bit(8)\n  always {\n    co";
+        let index = ModuleIndex::default();
+        let r = analyze_with_index(src, &index);
+        let names: Vec<_> = api::completions_at(&r, &index, src.len())
+            .symbols
+            .iter()
+            .map(|s| s.name.clone())
+            .collect();
+        assert!(names.iter().any(|n| n == "count"), "{:?}", names);
+    }
+
     // --- val new のメンバ補完 (外部ファイル想定) ------------
 
     /// 別ファイルで定義したモジュールインスタンスの出力端子を補完する

@@ -261,6 +261,20 @@ mod tests {
         assert_eq!(assigns, 2, "both assignments survive recovery");
     }
 
+    #[test]
+    fn recover_unclosed_block_keeps_module() {
+        // 編集途中の閉じ `}` 欠落でもモジュールとフィールドが解析結果に残る
+        let src = "module M {\n  reg count: Bit(8)\n  always {\n    count := 1\n";
+        let (result, _) = parse(src);
+        assert!(!result.errors.is_empty(), "error should be reported");
+        let m = match &result.unit.items[0].inner {
+            Item::Module(m) => m,
+            _ => panic!("module must survive recovery"),
+        };
+        assert!(m.items.iter().any(|f| matches!(f.inner, Field::Reg(_))));
+        assert!(m.items.iter().any(|f| matches!(f.inner, Field::Always(_))));
+    }
+
     macro_rules! sample_test {
         ($name:ident, $path:literal) => {
             #[test]

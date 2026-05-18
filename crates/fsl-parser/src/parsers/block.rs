@@ -16,7 +16,7 @@ use fsl_lexer::Token;
 
 use crate::{
     Case, Expr, Expr_,
-    parsers::{RecExpr, atom::ident_def, valdecl::val_decl_def},
+    parsers::{RecExpr, atom::ident_def, rbrace, valdecl::val_decl_def},
 };
 
 /// brace ブロック `{ expr* }`
@@ -129,7 +129,8 @@ where
         .allow_leading()
         .allow_trailing()
         .collect()
-        .delimited_by(just(Token::LBrace), just(Token::RBrace))
+        // 閉じ `}` の欠落から復旧し，編集途中でも本体を解析結果に残す
+        .delimited_by(just(Token::LBrace), rbrace())
 }
 
 /// `{ cond : body ... [else : body] }`  any/alt の本体
@@ -157,7 +158,8 @@ where
         .allow_trailing()
         .collect()
         .then(else_arm.or_not())
-        .delimited_by(just(Token::LBrace), just(Token::RBrace))
+        // 閉じ `}` の欠落から復旧する
+        .delimited_by(just(Token::LBrace), rbrace())
 }
 
 /// 式の解析失敗からの復旧パーサ

@@ -26,6 +26,7 @@ use crate::{
         atom::ident_def,
         block::{block_def, control_def},
         pattern::pattern_def,
+        rbrace,
     },
 };
 
@@ -302,7 +303,8 @@ where
         .allow_leading()
         .allow_trailing()
         .collect::<Vec<_>>()
-        .delimited_by(just(Token::LBrace), just(Token::RBrace));
+        // 閉じ `}` の欠落から復旧する
+        .delimited_by(just(Token::LBrace), rbrace());
 
     let with_match = pratt_expr
         .foldl_with(

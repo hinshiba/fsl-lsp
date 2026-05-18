@@ -42,6 +42,18 @@ fn token_proj(t: &(Token, SimpleSpan)) -> (&Token, &SimpleSpan) {
 pub(crate) type RecExpr<'tok, I> =
     Recursive<Indirect<'tok, 'tok, I, Expr, extra::Err<Rich<'tok, Token>>>>;
 
+/// 閉じ波括弧 `}` のパーサ  欠落時は何も消費せず復旧する
+///
+/// 編集途中のソースは閉じ括弧をまだ持たないことが多い．`}` を欠く場合に
+/// 解析を打ち切ると本体ブロックがまるごと失われ，スコープ内シンボルの
+/// 補完が働かなくなる．欠落時は空解析で復旧して本体を解析結果に残す．
+pub(crate) fn rbrace<'tok, I>() -> impl Parser<'tok, I, Token, extra::Err<Rich<'tok, Token>>> + Clone
+where
+    I: ValueInput<'tok, Token = Token, Span = SimpleSpan>,
+{
+    just(Token::RBrace).recover_with(via_parser(empty().to(Token::RBrace)))
+}
+
 /// `expr` の再帰ハンドルを宣言・定義して返す
 ///
 /// 戻り値の `RecExpr` は `Clone` 可能で，そのまま `Parser` として使える

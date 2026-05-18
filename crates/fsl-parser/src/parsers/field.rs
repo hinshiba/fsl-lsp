@@ -18,6 +18,7 @@ use crate::{
         RecExpr,
         atom::ident_def,
         block::block_def,
+        rbrace,
         typedef::type_def,
         valdecl::{mem_def, reg_def, val_tuple_def},
     },
@@ -177,7 +178,8 @@ where
         .allow_leading()
         .allow_trailing()
         .collect()
-        .delimited_by(just(Token::LBrace), just(Token::RBrace));
+        // 閉じ `}` の欠落から復旧する
+        .delimited_by(just(Token::LBrace), rbrace());
 
     just(Token::Stage)
         // ステージ名

@@ -10,7 +10,7 @@ use fsl_lexer::Token;
 
 use crate::{
     Item, ModuleDef, TraitDef,
-    parsers::{RecExpr, atom, field::fields_def},
+    parsers::{RecExpr, atom, field::fields_def, rbrace},
 };
 
 /// アイテムのパーサー
@@ -51,8 +51,8 @@ where
         );
 
     module_decl
-        // {}に囲まれた領域のフィールド
-        .then(fields_def(expr).delimited_by(just(Token::LBrace), just(Token::RBrace)))
+        // {}に囲まれた領域のフィールド  閉じ `}` の欠落から復旧する
+        .then(fields_def(expr).delimited_by(just(Token::LBrace), rbrace()))
         .map(|(((name, extends), with_traits), items)| ModuleDef {
             name,
             extends,
@@ -71,7 +71,7 @@ where
     just(Token::Trait)
         // トレイト名
         .ignore_then(atom::ident_def())
-        // {}に囲まれた領域のフィールド
-        .then(fields_def(expr).delimited_by(just(Token::LBrace), just(Token::RBrace)))
+        // {}に囲まれた領域のフィールド  閉じ `}` の欠落から復旧する
+        .then(fields_def(expr).delimited_by(just(Token::LBrace), rbrace()))
         .map(|(name, items)| TraitDef { name, items })
 }
