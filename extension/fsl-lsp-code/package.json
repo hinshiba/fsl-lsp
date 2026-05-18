@@ -2,7 +2,7 @@
   "name": "fsl-lsp-code",
   "displayName": "fsl-lsp-code",
   "description": "fsl言語サービスを提供",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "engines": {
     "vscode": "^1.116.0"
   },
