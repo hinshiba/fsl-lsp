@@ -4,6 +4,7 @@
 
 use chumsky::input::{Input, ValueInput};
 use chumsky::prelude::*;
+use chumsky::recovery::skip_then_retry_until;
 use chumsky::recursive::{Indirect, Recursive};
 
 use crate::ast::*;
@@ -37,43 +38,34 @@ fn token_proj(t: &(Token, SimpleSpan)) -> (&Token, &SimpleSpan) {
     (&t.0, &t.1)
 }
 
-// Block と Expr は互いを要求する
-// `Recursive::declare()` の未定義状態相互参照を作り
-// 各サブパーサに `.clone()` で配ってから `define()` で実体を結ぶ
-//
-// `Indirect<'src, 'b, ...>` の `'b` は内部パーサの寿命  所有パーサ
-// しか流さないため `'tok = 'b` で問題ない
-
-/// `Block` 用の相互再帰ハンドル
-pub(crate) type RecBlock<'tok, I> =
-    Recursive<Indirect<'tok, 'tok, I, Block, extra::Err<Rich<'tok, Token>>>>;
-
-/// `Expr` 用の相互再帰ハンドル
+/// `Expr` 用の再帰ハンドル
 pub(crate) type RecExpr<'tok, I> =
     Recursive<Indirect<'tok, 'tok, I, Expr, extra::Err<Rich<'tok, Token>>>>;
 
-/// Block と Expr の相互再帰パーサを宣言・定義して返す
+/// 閉じ波括弧 `}` のパーサ  欠落時は何も消費せず復旧する
 ///
-/// 戻り値の `RecBlock` / `RecExpr` は `Clone` 可能で，
-/// そのまま `Parser` として使える
-pub(crate) fn block_and_expr<'tok, I>() -> (RecBlock<'tok, I>, RecExpr<'tok, I>)
+/// 編集途中のソースは閉じ括弧をまだ持たないことが多い．`}` を欠く場合に
+/// 解析を打ち切ると本体ブロックがまるごと失われ，スコープ内シンボルの
+/// 補完が働かなくなる．欠落時は空解析で復旧して本体を解析結果に残す．
+pub(crate) fn rbrace<'tok, I>() -> impl Parser<'tok, I, Token, extra::Err<Rich<'tok, Token>>> + Clone
 where
     I: ValueInput<'tok, Token = Token, Span = SimpleSpan>,
 {
-    // 実体未定義のハンドルを作る
-    let mut block: RecBlock<'tok, I> = Recursive::declare();
+    just(Token::RBrace).recover_with(via_parser(empty().to(Token::RBrace)))
+}
+
+/// `expr` の再帰ハンドルを宣言・定義して返す
+///
+/// 戻り値の `RecExpr` は `Clone` 可能で，そのまま `Parser` として使える
+pub(crate) fn expr_parser<'tok, I>() -> RecExpr<'tok, I>
+where
+    I: ValueInput<'tok, Token = Token, Span = SimpleSpan>,
+{
+    // 実体未定義のハンドルを作り，それを配って実体を構築する
     let mut expr: RecExpr<'tok, I> = Recursive::declare();
-
-    //未定義ハンドルを配って実体パーサを構築する
-    // `block.clone()` / `expr.clone()` は内部の `Rc` を bump するだけ
-    let block_parser = block::block_def(block.clone(), expr.clone());
-    let expr_parser = expr::expr_def(block.clone(), expr.clone());
-
-    // 確定
-    block.define(block_parser);
-    expr.define(expr_parser);
-
-    (block, expr)
+    let parser = expr::expr_def(expr.clone());
+    expr.define(parser);
+    expr
 }
 
 pub fn parse_token(tokens: Vec<SpannedToken>, src_end: usize) -> ParseResult {
@@ -109,7 +101,13 @@ fn parser<'tok, I>() -> impl Parser<'tok, I, Spanned<CompilationUnit>, extra::Er
 where
     I: ValueInput<'tok, Token = Token, Span = SimpleSpan>,
 {
-    item_def()
+    // `expr` の再帰結び目をここで一度だけ作り `item_def` 経由で配る
+    //
+    // アイテム解析が失敗した場合は次のアイテムが解析できる位置まで
+    // トークンを読み飛ばして再試行する  破損したアイテムの後ろにある
+    // 正常なモジュール／トレイトを取りこぼさないための復旧措置
+    item_def(expr_parser())
+        .recover_with(skip_then_retry_until(any().ignored(), end()))
         .repeated()
         .collect()
         .map(|items| CompilationUnit { items })

@@ -1,0 +1,4 @@
+* text=auto eol=lf
+
+# GitHubのリポジトリ言語統計から独自言語FSLのソースを除外する
+*.fsl linguist-detectable=false

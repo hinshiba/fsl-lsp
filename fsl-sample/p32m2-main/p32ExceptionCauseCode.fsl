@@ -1,0 +1,14 @@
+/* (p32ExceptionCauseCode.fsl) */
+
+trait p32ExceptionCauseCode {
+  /* exception cause code */
+  val CAUSE_INT = 0x0 // external interruption
+  val CAUSE_IBE = 0x6 // bus error (instruction fetch)
+  val CAUSE_DBE = 0x7 // bus error (data load/store)
+  val CAUSE_SYS = 0x8 // systemcall exception
+  val CAUSE_BP  = 0x9 // break point exception
+  val CAUSE_RI  = 0xa // reserved instruction exception
+  val CAUSE_OVF = 0xc // arithmetic overflow exception
+} // trait p32ExceptionCauseCode
+
+/* End of file (p32ExceptionCauseCode.fsl) */

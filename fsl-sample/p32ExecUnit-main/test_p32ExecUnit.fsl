@@ -1,0 +1,34 @@
+/* (test_p32ExecUnit.fsl) */
+
+module test_p32ExecUnit extends Simulator {
+  reg count: Bit(16)
+  val execUnit = new p32ExecUnit
+  mem [Bit(120)] pat(1000)
+  initial {
+    _readmemh("test_p32ExecUnit.pat", pat)
+  }
+  always {
+    count := count + 1
+    //if (2 <= count && count <= 4001) par {
+    if (2 <= count && count <= 1001) par {
+      val i = count - 2 //
+      val p = pat(i)       // xx_xx_xx_xxxxxxxx_xxxxxxxx_xxxxxxxx
+      val op    = p(117, 112) // (6-btis)
+      val funct = p(109, 104) // (6-bits)
+      val shamt = p(100,  96) // (5-btis)
+      val a     = p( 95,  64) // (32-bits)
+      val b     = p( 63,  32) // (32-bits)
+      val mdata = p( 31,   0) // (32-bits)
+      execUnit.exec(op, funct, shamt, a, b, mdata)
+      val result    = execUnit.result
+      val mdata_out = execUnit.mdata_out // 32-bits
+      val store_loc = execUnit.store_loc // 4-bits
+      _display("%d: %b %b %d %x %x %x - %x %x %b",
+	       i, op, funct, shamt, a, b, mdata, 
+	       result, mdata_out, store_loc)
+    }
+    if (count == 1001) _finish("%d: bye", count)
+  }
+}
+/* End of file (test_p32ExecUnit.fsl) */
+

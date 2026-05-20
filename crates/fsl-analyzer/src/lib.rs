@@ -9,6 +9,7 @@ pub mod builder;
 pub mod builtin;
 pub mod checks;
 pub mod context;
+pub mod index;
 pub mod resolver;
 pub mod scope;
 pub mod span;
@@ -17,6 +18,7 @@ pub mod symbols;
 pub mod ty;
 
 pub use fsl_parser::{CompilationUnit, Span};
+pub use index::{Interface, Member, ModuleIndex};
 pub use scope::{Scope, ScopeArena, ScopeId, ScopeKind};
 pub use symbol::{DefId, Mutability, Symbol, SymbolKind};
 pub use symbols::{Reference, ResolvedTo, SymbolTable};
@@ -61,8 +63,16 @@ pub struct AnalysisResult {
 // ============================================================
 
 /// ソース文字列を直接受け取るエントリポイント
-/// パース → シンボル収集 → 名前解決 → Check 群の順に実行する
+/// 外部ファイルを考慮しない単一ファイル解析
 pub fn analyze(src: &str) -> AnalysisResult {
+    analyze_with_index(src, &ModuleIndex::default())
+}
+
+/// ワークスペース索引を併用するエントリポイント
+///
+/// パース → シンボル収集 → 名前解決 → Check 群の順に実行する．
+/// `index` は `extends` 継承メンバの解決に用いる．
+pub fn analyze_with_index(src: &str, index: &ModuleIndex) -> AnalysisResult {
     let (parsed, lex_errs) = parse(src);
     let mut diagnostics: Vec<Diagnostic> = Vec::new();
 
@@ -86,7 +96,7 @@ pub fn analyze(src: &str) -> AnalysisResult {
 
     // シンボル収集と名前解決
     let mut symbols = builder::build(&parsed.unit);
-    resolver::resolve_references(&parsed.unit, &mut symbols, builtin::builtins());
+    resolver::resolve_references(&parsed.unit, &mut symbols, builtin::builtins(), index);
 
     // 意味解析チェック群を実行
     {
@@ -320,5 +330,166 @@ mod tests {
     fn cpu8_sample_does_not_panic() {
         let src = include_str!("../../../fsl-sample/fsl_tutorial_samples-main/cpu8.fsl");
         let _ = analyze(src);
+    }
+
+    // --- extends 継承 (外部ファイル想定) --------------------
+
+    /// 別ソースの trait を継承したモジュールで継承メンバ参照が解決する
+    #[test]
+    fn extends_trait_member_resolves_across_files() {
+        let trait_src = "trait Op { val ADD = 0b100000 }";
+        let mod_src = "module M extends Op { output o: Bit(6) always { o = ADD } }";
+        let mut index = ModuleIndex::default();
+        index.add_source(trait_src);
+        index.add_source(mod_src);
+
+        let r = analyze_with_index(mod_src, &index);
+        assert!(errors(&r).is_empty(), "{:?}", r.diagnostics);
+    }
+
+    /// extends が無ければ同じ参照は未宣言エラーになる
+    #[test]
+    fn unknown_without_extends_still_errors() {
+        let src = "module M { output o: Bit(6) always { o = ADD } }";
+        let r = analyze(src);
+        assert!(
+            errors(&r).iter().any(|m| m.contains("ADD")),
+            "{:?}",
+            r.diagnostics
+        );
+    }
+
+    /// 多段の extends で継承メンバが解決する
+    #[test]
+    fn extends_chain_member_resolves() {
+        let base = "trait Base { val ROOT = 1 }";
+        let mid = "module Mid extends Base { }";
+        let leaf = "module Leaf extends Mid { always { val x = ROOT } }";
+        let mut index = ModuleIndex::default();
+        index.add_source(base);
+        index.add_source(mid);
+        index.add_source(leaf);
+
+        let r = analyze_with_index(leaf, &index);
+        assert!(errors(&r).is_empty(), "{:?}", r.diagnostics);
+    }
+
+    /// 通常補完に継承メンバが含まれる
+    #[test]
+    fn completions_include_inherited_members() {
+        let trait_src = "trait Op { val ADD = 0b100000 }";
+        let mod_src = "module M extends Op { always { val x = 1 } }";
+        let mut index = ModuleIndex::default();
+        index.add_source(trait_src);
+
+        let r = analyze_with_index(mod_src, &index);
+        let offset = mod_src.find("val x").unwrap();
+        let list = api::completions_at(&r, &index, offset);
+        assert!(
+            list.inherited.iter().any(|m| m.name == "ADD"),
+            "inherited: {:?}",
+            list.inherited.iter().map(|m| &m.name).collect::<Vec<_>>()
+        );
+    }
+
+    /// 閉じ `}` を欠く編集途中のソースでもスコープ内シンボルが補完される
+    #[test]
+    fn completions_available_in_unclosed_module() {
+        let src = "module M {\n  reg count: Bit(8)\n  always {\n    co";
+        let index = ModuleIndex::default();
+        let r = analyze_with_index(src, &index);
+        let names: Vec<_> = api::completions_at(&r, &index, src.len())
+            .symbols
+            .iter()
+            .map(|s| s.name.clone())
+            .collect();
+        assert!(names.iter().any(|n| n == "count"), "{:?}", names);
+    }
+
+    // --- val new のメンバ補完 (外部ファイル想定) ------------
+
+    /// 別ファイルで定義したモジュールインスタンスの出力端子を補完する
+    #[test]
+    fn member_completion_lists_module_outputs() {
+        let add4 = "module add4 { input a: Bit(4) output out: Bit(4) output co: Bit(1) }";
+        let user = "module Top { val a0 = new add4 always { val x = a0 } }";
+        let mut index = ModuleIndex::default();
+        index.add_source(add4);
+        index.add_source(user);
+
+        let r = analyze_with_index(user, &index);
+        let offset = user.rfind("a0").unwrap();
+        let members =
+            api::member_completions(&r, &index, offset, "a0").expect("instance members");
+        let names: Vec<_> = members.iter().map(|m| m.name.as_str()).collect();
+        assert!(names.contains(&"out"), "{:?}", names);
+        assert!(names.contains(&"co"), "{:?}", names);
+    }
+
+    /// 実サンプルで trait 継承の名前解決が成立する
+    #[test]
+    fn p32execunit_inherits_opcode_trait() {
+        let opcode = include_str!("../../../fsl-sample/p32ExecUnit-main/p32Opcode.fsl");
+        let exec = include_str!("../../../fsl-sample/p32ExecUnit-main/p32ExecUnit.fsl");
+        let mut index = ModuleIndex::default();
+        index.add_source(opcode);
+        index.add_source(exec);
+
+        let with = analyze_with_index(exec, &index);
+        let without = analyze(exec);
+        // 継承解決により未宣言エラーが減る
+        assert!(
+            errors(&with).len() < errors(&without).len(),
+            "with={} without={}",
+            errors(&with).len(),
+            errors(&without).len()
+        );
+        // SPECIAL は trait p32Opcode 由来なので未宣言にならない
+        assert!(!errors(&with).iter().any(|m| m.contains("`SPECIAL`")));
+    }
+
+    /// インスタンスでないレシーバはメンバ補完を返さない
+    #[test]
+    fn member_completion_rejects_non_instance() {
+        let src = "module M { reg r: Bit(8) always { val x = r } }";
+        let index = ModuleIndex::default();
+        let r = analyze_with_index(src, &index);
+        let offset = src.rfind('r').unwrap();
+        assert!(api::member_completions(&r, &index, offset, "r").is_none());
+    }
+
+    // --- BitN.fsl プレリュード ------------------------------
+
+    /// プレリュードが Bit のメンバを公開する
+    #[test]
+    fn prelude_exposes_bit_members() {
+        let members = index::prelude().resolved_members("Bit");
+        let names: Vec<_> = members.iter().map(|m| m.name.as_str()).collect();
+        assert!(names.contains(&"zero"), "{:?}", names);
+        assert!(names.contains(&"one"), "{:?}", names);
+        assert!(names.contains(&"allOne"), "{:?}", names);
+    }
+
+    /// `Bit(n)` を式位置で用いても未宣言シンボル扱いされない
+    #[test]
+    fn bit_constructor_is_resolved() {
+        let src = "module M { def f(w): Bit(w) = Bit(w).zero }";
+        let r = analyze(src);
+        assert!(
+            !errors(&r).iter().any(|m| m.contains("Bit")),
+            "{:?}",
+            r.diagnostics
+        );
+    }
+
+    /// `Bit(n).zero` のメンバ補完がプレリュード経由で得られる
+    #[test]
+    fn member_completion_resolves_bit_prelude() {
+        let index = ModuleIndex::default();
+        let r = analyze_with_index("module M {}", &index);
+        let members =
+            api::member_completions(&r, &index, 0, "Bit").expect("prelude Bit members");
+        let names: Vec<_> = members.iter().map(|m| m.name.as_str()).collect();
+        assert!(names.contains(&"allOne"), "{:?}", names);
     }
 }

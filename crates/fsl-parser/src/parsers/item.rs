@@ -10,20 +10,29 @@ use fsl_lexer::Token;
 
 use crate::{
     Item, ModuleDef, TraitDef,
-    parsers::{atom, field::fields_def},
+    parsers::{RecExpr, atom, field::fields_def, rbrace},
 };
 
 /// アイテムのパーサー
-pub(super) fn item_def<'tok, I>()
--> impl Parser<'tok, I, Spanned<Item>, extra::Err<Rich<'tok, Token>>>
+///
+/// `expr` の再帰ハンドルを受け取り，モジュール／トレイト本体へ配る
+pub(super) fn item_def<'tok, I>(
+    expr: RecExpr<'tok, I>,
+) -> impl Parser<'tok, I, Spanned<Item>, extra::Err<Rich<'tok, Token>>>
 where
     I: ValueInput<'tok, Token = Token, Span = SimpleSpan>,
 {
-    choice((module_def().map(Item::Module), trait_def().map(Item::Trait))).spanned()
+    choice((
+        module_def(expr.clone()).map(Item::Module),
+        trait_def(expr).map(Item::Trait),
+    ))
+    .spanned()
 }
 
 /// モジュールのパーサー
-pub(super) fn module_def<'tok, I>() -> impl Parser<'tok, I, ModuleDef, extra::Err<Rich<'tok, Token>>>
+pub(super) fn module_def<'tok, I>(
+    expr: RecExpr<'tok, I>,
+) -> impl Parser<'tok, I, ModuleDef, extra::Err<Rich<'tok, Token>>>
 where
     I: ValueInput<'tok, Token = Token, Span = SimpleSpan>,
 {
@@ -35,13 +44,15 @@ where
         // トレイトの実装
         .then(
             just(Token::With)
-                .ignore_then(atom::ident_def().repeated().collect())
+                .ignore_then(atom::ident_def())
+                .repeated()
+                .collect()
                 .or_not(),
         );
 
     module_decl
-        // {}に囲まれた領域のフィールド
-        .then(fields_def().delimited_by(just(Token::LBrace), just(Token::RBrace)))
+        // {}に囲まれた領域のフィールド  閉じ `}` の欠落から復旧する
+        .then(fields_def(expr).delimited_by(just(Token::LBrace), rbrace()))
         .map(|(((name, extends), with_traits), items)| ModuleDef {
             name,
             extends,
@@ -51,14 +62,16 @@ where
 }
 
 /// トレイトのパーサー
-pub(super) fn trait_def<'tok, I>() -> impl Parser<'tok, I, TraitDef, extra::Err<Rich<'tok, Token>>>
+pub(super) fn trait_def<'tok, I>(
+    expr: RecExpr<'tok, I>,
+) -> impl Parser<'tok, I, TraitDef, extra::Err<Rich<'tok, Token>>>
 where
     I: ValueInput<'tok, Token = Token, Span = SimpleSpan>,
 {
     just(Token::Trait)
         // トレイト名
         .ignore_then(atom::ident_def())
-        // {}に囲まれた領域のフィールド
-        .then(fields_def().delimited_by(just(Token::LBrace), just(Token::RBrace)))
+        // {}に囲まれた領域のフィールド  閉じ `}` の欠落から復旧する
+        .then(fields_def(expr).delimited_by(just(Token::LBrace), rbrace()))
         .map(|(name, items)| TraitDef { name, items })
 }

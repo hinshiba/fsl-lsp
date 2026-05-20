@@ -4,18 +4,29 @@
 //! 解析結果と LineIndex を `Backend.docs` にキャッシュする．
 //! goto_definition / hover / completion は本キャッシュを参照する．
 
-use fsl_analyzer::{analyze, Severity, Span};
+use fsl_analyzer::{analyze_with_index, Severity, Span};
 use line_index::{LineIndex, TextSize};
 use tower_lsp::lsp_types::{Diagnostic, DiagnosticSeverity, Position, Range, Url};
 
+use crate::workspace::build_index;
 use crate::{Backend, DocumentState};
 
 impl Backend {
     /// 変更を処理するエントリポイント
-    /// 解析結果の診断を LSP に push し，文書状態をキャッシュする
+    /// ソースを索引に反映し，解析結果の診断を push して文書状態をキャッシュする
     pub async fn on_change(&self, uri: Url, text: &str) {
         let line_index = LineIndex::new(text);
-        let analysis = analyze(text);
+
+        // 変更ソースを索引に反映してから解析する
+        {
+            let mut sources = self.sources.write().await;
+            sources.insert(uri.clone(), text.to_string());
+            *self.index.write().await = build_index(&sources);
+        }
+        let analysis = {
+            let index = self.index.read().await;
+            analyze_with_index(text, &index)
+        };
 
         // LSP 診断に変換
         let diagnostics: Vec<Diagnostic> = analysis

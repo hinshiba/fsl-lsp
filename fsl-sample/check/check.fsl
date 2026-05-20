@@ -1,0 +1,18 @@
+module add4 {
+  input    a: Bit(4)
+  input    b: Bit(4)
+  input   ci: Bit(1) // carry-in
+  output out: Bit(4) // sum output
+  output  co: Bit(1) // carry-out
+  output  ov: Bit(1) // overflow
+
+  val a = 2
+  reg g: Bit(a) 
+
+  stage add(a, b, ci) {
+    out(1, 2) := 0b11
+  }
+
+
+} // module add4
+

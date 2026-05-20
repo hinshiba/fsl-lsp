@@ -82,7 +82,7 @@ mod tests {
             Item::Module(m) => m,
             _ => panic!(),
         };
-        assert!(matches!(m.items[0].inner, Field::Instance(_)));
+        assert!(matches!(m.items[0].inner, Field::NewInstance(_)));
     }
 
     #[test]
@@ -130,12 +130,8 @@ mod tests {
             Field::Fn(f) => f,
             _ => panic!(),
         };
-        let body_stmt = &f.body.stmts[0];
-        let expr = match &body_stmt.inner {
-            Statement::Expr(e) => e,
-            _ => panic!(),
-        };
-        match &expr.inner {
+        // 関数本体は式そのもの  `= a + b * c`
+        match &f.body.inner {
             Expr_::Binary(BinaryOp::Add, _, rhs) => match &rhs.inner {
                 Expr_::Binary(BinaryOp::Mul, _, _) => {}
                 k => panic!("rhs is not Mul: {:?}", k),
@@ -184,6 +180,99 @@ mod tests {
             "parse errors: {:?}",
             result.errors
         );
+    }
+
+    // ---- エラー耐性 ----
+
+    #[test]
+    fn recover_field_skips_to_next() {
+        // 壊れたフィールドの後続フィールドも解析できることを確認する
+        let src = r#"module M {
+  reg a: Bit(8)
+  foo bar baz
+  reg b: Bit(8)
+}
+"#;
+        let (result, _) = parse(src);
+        assert!(!result.errors.is_empty(), "error should be reported");
+        let m = match &result.unit.items[0].inner {
+            Item::Module(m) => m,
+            _ => panic!(),
+        };
+        // reg a / Error / reg b の 3 要素が残る
+        let regs = m
+            .items
+            .iter()
+            .filter(|f| matches!(f.inner, Field::Reg(_)))
+            .count();
+        assert_eq!(regs, 2, "both reg fields survive recovery");
+        assert!(m.items.iter().any(|f| matches!(f.inner, Field::Error)));
+    }
+
+    #[test]
+    fn recover_item_skips_to_next_module() {
+        // 壊れたトップレベル断片の後ろのモジュールも解析できる
+        let src = "module A {} ??? garbage module B {}";
+        let (result, _) = parse(src);
+        assert!(!result.errors.is_empty());
+        let names: Vec<_> = result
+            .unit
+            .items
+            .iter()
+            .filter_map(|i| match &i.inner {
+                Item::Module(m) => Some(m.name.inner.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(names, ["A", "B"]);
+    }
+
+    #[test]
+    fn recover_expr_in_block() {
+        // ブロック内の壊れた式の後続式が残ることを確認する
+        let src = r#"module M {
+  always {
+    a := 1
+    * * *
+    b := 2
+  }
+}
+"#;
+        let (result, _) = parse(src);
+        assert!(!result.errors.is_empty());
+        let m = match &result.unit.items[0].inner {
+            Item::Module(m) => m,
+            _ => panic!(),
+        };
+        let body = match &m.items[0].inner {
+            Field::Always(e) => e,
+            _ => panic!(),
+        };
+        let exprs = match &body.inner {
+            Expr_::Block(es) => es,
+            _ => panic!(),
+        };
+        // a:=1 / Error / b:=2
+        assert!(exprs.iter().any(|e| matches!(e.inner, Expr_::Error)));
+        let assigns = exprs
+            .iter()
+            .filter(|e| matches!(e.inner, Expr_::MemAssign(..)))
+            .count();
+        assert_eq!(assigns, 2, "both assignments survive recovery");
+    }
+
+    #[test]
+    fn recover_unclosed_block_keeps_module() {
+        // 編集途中の閉じ `}` 欠落でもモジュールとフィールドが解析結果に残る
+        let src = "module M {\n  reg count: Bit(8)\n  always {\n    count := 1\n";
+        let (result, _) = parse(src);
+        assert!(!result.errors.is_empty(), "error should be reported");
+        let m = match &result.unit.items[0].inner {
+            Item::Module(m) => m,
+            _ => panic!("module must survive recovery"),
+        };
+        assert!(m.items.iter().any(|f| matches!(f.inner, Field::Reg(_))));
+        assert!(m.items.iter().any(|f| matches!(f.inner, Field::Always(_))));
     }
 
     macro_rules! sample_test {

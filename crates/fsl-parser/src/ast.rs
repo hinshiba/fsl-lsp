@@ -4,7 +4,6 @@
 //! ノードはソース上の位置情報 `Span` を持つ．
 
 use chumsky::span::Spanned;
-use fsl_lexer::Span;
 
 pub type Ident = Spanned<String>;
 
@@ -43,56 +42,44 @@ pub struct ModuleDef {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Field {
+    // ---- 入出力端子 ----
+    Input(InputDecl),
+    Output(OutputDecl),
+    OutputFn(OutputFnDecl),
+
+    // ---- val ----
+    Val(ValDecl),
+    NewInstance(NewInstance),
+
+    // ---- 記憶素子 ----
     Reg(RegDecl),
     Mem(MemDecl),
-    Input(PortDecl),
-    Output(PortDecl),
-    OutputFn(OutputFnDecl),
-    Instance(InstanceDecl),
-    Fn(FnDef),
-    Always(Block),
-    Initial(Block),
-    Stage(StageDef),
+
+    // ---- 型宣言 ----
     Composite(CompositeDef),
-    Val(ValDecl),
+
+    // ---- 内容 ----
+    Always(Expr),
+    Initial(Expr),
+    Fn(FnDef),
+    Stage(StageDef),
+
     /// 解析失敗時のプレースホルダ
     Error,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RegDecl {
+pub struct Param {
     pub name: Ident,
-    pub ty: FslType,
-    pub init: Option<Expr>,
+    /// 引数型
+    pub ty: Option<FslType>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MemDecl {
-    pub name: Ident,
-    pub elem_ty: FslType,
-    pub size: Expr,
-    pub init: Vec<Expr>,
-}
+// ============================================================
+// 定義
+// ============================================================
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PortDecl {
-    pub name: Ident,
-    pub ty: FslType,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct OutputFnDecl {
-    pub name: Ident,
-    pub params: Vec<Spanned<Param>>,
-    pub ret: FslType,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct InstanceDecl {
-    pub name: Ident,
-    pub module_name: Ident,
-}
-
+/// 関数の定義
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FnDef {
     pub is_private: bool,
@@ -101,20 +88,10 @@ pub struct FnDef {
     pub name: Ident,
     pub params: Vec<Spanned<Param>>,
     pub ret: Option<FslType>,
-    pub body_kind: FnBodyKind,
-    pub body: Block,
+    pub body: Expr,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum FnBodyKind {
-    /// `def f(...): T = { ... }` 形式
-    Expr,
-    /// `def f(...) seq { ... }` 形式
-    Seq,
-    /// `def f(...) par { ... }` 形式
-    Par,
-}
-
+/// ステージの定義
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StageDef {
     pub name: Ident,
@@ -122,22 +99,21 @@ pub struct StageDef {
     pub body: Vec<Spanned<StageItem>>,
 }
 
-/// stage 本体には state 定義，stage ローカル変数（reg/val），文が混在する．
+/// stage 本体に並ぶ要素
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StageItem {
-    State(StateDef),
     Reg(RegDecl),
-    Mem(MemDecl),
-    Val(ValDecl),
-    Statement(Statement),
+    State(StateDef),
+    Expr(Expr),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StateDef {
     pub name: Ident,
-    pub body: Statement,
+    pub body: Expr,
 }
 
+/// 複合型定義
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompositeDef {
     pub name: Ident,
@@ -150,25 +126,248 @@ pub struct CompositeField {
     pub ty: FslType,
 }
 
+// ============================================================
+// 宣言
+// ============================================================
+
+/// valによる宣言
+/// 唯一 newを右にとれる
+/// 不変であるので初期化子が必須
+/// module: o, func: o, stage: o
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ValDecl {
     pub pattern: ValLhs,
     pub ty: Option<FslType>,
-    pub init: Expr,
+    pub init: Box<Expr>,
 }
 
-/// `val x = ...` または `val (a, b, c) = ...`
+/// `val`左辺
+/// 単一の変数宣言と，タプルによる宣言がある
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ValLhs {
     Single(Ident),
     Tuple(Vec<Ident>),
 }
 
+/// regによる宣言
+/// module: o, func: x, stage: o
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Param {
+pub struct RegDecl {
     pub name: Ident,
-    /// 引数型は省略可（`def add(a, b, ci): Unit` のように上位スコープから流用される）
-    pub ty: Option<FslType>,
+    pub ty: FslType,
+    pub init: Option<Expr>,
+}
+
+/// memによる宣言
+/// module: o, func: x, stage: x
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MemDecl {
+    pub name: Ident,
+    pub elem_ty: FslType,
+    pub size: Expr,
+    pub init: Vec<Expr>,
+}
+
+/// inputによる宣言
+/// module: o, func: x, stage: x
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InputDecl {
+    pub name: Ident,
+    pub ty: FslType,
+}
+
+/// outputによる宣言
+/// module: o, func: x, stage: x
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OutputDecl {
+    pub name: Ident,
+    pub ty: FslType,
+}
+
+/// output def による宣言
+/// module: o, func: x, stage: x
+/// 戻り値型は省略可能
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OutputFnDecl {
+    pub name: Ident,
+    pub params: Vec<Spanned<Param>>,
+    pub ret: Option<FslType>,
+}
+
+/// new によるインスタンス化
+/// module: o, func: x, stage: x (TODO)
+/// val ident = new module
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewInstance {
+    pub name: Ident,
+    pub module_name: Ident,
+}
+
+// ============================================================
+// 式
+// ============================================================
+
+pub type Expr = Spanned<Expr_>;
+
+// Spanned<>にするのを一括で行うため_をつけてある
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Expr_ {
+    Unit,
+    // ---- リテラル ----
+    IntLit(u64),
+    BitLit(u64),
+    StringLit(String),
+    Bool(bool),
+
+    /// 変数
+    Variable(Ident),
+
+    /// `(e1, e2, ...)` または単独の括弧式
+    Tuple(Vec<Expr>),
+
+    // ---- 演算 ----
+    /// 単項 `~` `!` `-`
+    Unary(UnaryOp, Box<Expr>),
+    /// 二項演算
+    Binary(BinaryOp, Box<Expr>, Box<Expr>),
+    /// `f(args)` 関数呼び出し or ビット切り出し
+    /// 意味解析で区別する
+    Call(Box<Expr>, Vec<Expr>),
+
+    // ---- 構造 ----
+    /// `expr.field`
+    Field(Box<Expr>, Ident),
+    /// `if (cond) then else else_`
+    If(Box<Expr>, Box<Expr>, Option<Box<Expr>>),
+
+    // ---- stage ----
+    // if内等にも配置されるため exprだが，stage内のみ通用する
+    /// `generate <stage>(args)`  Unitを返す
+    Generate(Ident, Vec<Expr>),
+    /// `relay <stage>(args)`  後段ステージへの中継  Unitを返す
+    Relay(Ident, Vec<Expr>),
+    /// `finish`  タスクの終了  Unitを返す
+    Finish,
+    /// `goto <state>`  ステート遷移  Unitを返す
+    Goto(Ident),
+
+    // ---- 宣言と代入 ----
+    // 普通はUnitを返す
+    /// val
+    ValDecl(ValDecl),
+
+    /// input, output, valの端子への代入
+    /// 左辺にビット切り出しが来る可能性あり
+    PortAssign(Box<Expr>, Box<Expr>),
+
+    /// reg, memの記憶素子への代入
+    /// 現時点の仕様では左側にスライスは来ない
+    MemAssign(Box<Expr>, Box<Expr>),
+
+    // ---- ブロック関連 ----
+    // 普通はUnitを返す
+    /// ブロック`{ ... }`
+    Block(Vec<Expr>),
+
+    /// `any { expr:Bool : expr[;] expr:Bool : expr[;] ... else: expr[;] }`
+    /// Unitを返す
+    Any(Vec<Spanned<Case>>, Option<Box<Expr>>),
+
+    /// `alt { expr:Bool : expr[;] expr:Bool : expr[;] ...  else: expr[;] }`
+    /// 実行結果を返す
+    Alt(Vec<Spanned<Case>>, Option<Box<Expr>>),
+
+    /// `seq { expr expr ... }`
+    /// Unitを返す
+    Seq(Vec<Expr>),
+    /// `par { expr expr ... }`
+    /// Unitを返す
+    Par(Vec<Expr>),
+    /// `expr match { case p => e ... }`
+    Match(Box<Expr>, Vec<Spanned<MatchArm>>),
+
+    /// `new ModName`
+    New(Ident),
+    /// 解析失敗時のプレースホルダ
+    Error,
+}
+
+// 演算子の表
+// fsl-tutorial p18
+
+#[derive(Debug, Clone, PartialEq, Eq, Copy)]
+pub enum UnaryOp {
+    // ---- ビット演算 ----
+    BitNot,
+    // ---- リダクション演算 ----
+    ReducAnd,
+    ReducOr,
+    ReducXor,
+
+    /// 論理NOT
+    LogNot,
+    /// 単項マイナス
+    Neg,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Copy)]
+pub enum BinaryOp {
+    // ---- ビット演算 ----
+    BitAnd,
+    BitOr,
+    BitXor,
+
+    // ---- 算術演算 ----
+    Add,
+    Sub,
+    Mul,
+
+    // ---- 比較演算 ----
+    Eq,
+    Ne,
+    Lt,
+    Le,
+    Gt,
+    Ge,
+
+    // ---- 論理演算 ----
+    LogOr,
+    LogAnd,
+
+    // ---- ビットシフト演算 ----
+    Sll,
+    Srl,
+    Sra,
+
+    /// ビット連結演算
+    Concat,
+
+    /// 符号拡張演算
+    SignExt,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Case {
+    pub cond: Expr,
+    pub body: Expr,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MatchArm {
+    pub pattern: Pattern,
+    pub body: Expr,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Pattern {
+    /// `case _ =>`
+    Wildcard,
+    /// `case ADD =>` 識別子（定数または束縛）
+    Ident(Ident),
+    /// `case 100 =>` 整数リテラル
+    IntLit(u64),
+    /// `case 0x00 =>` ビットリテラル
+    BitLit(u64),
 }
 
 // ============================================================
@@ -181,138 +380,12 @@ pub type FslType = Spanned<FslType_>;
 pub enum FslType_ {
     Unit,
     Boolean,
-    /// `Bit(n)` の n は意味解析で評価する．構文段階では式のまま保持．
     Bit(Box<Expr>),
     Int,
     String,
     Array(Box<FslType>),
     List(Box<FslType>),
     Tuple(Vec<FslType>),
-    /// ユーザ定義型・モジュール名・trait名
+    /// 複合型, モジュール, traitのいずれか
     Named(Ident),
-}
-
-// ============================================================
-// 文
-// ============================================================
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Block {
-    pub stmts: Vec<Spanned<Statement>>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Statement {
-    Val(ValDecl),
-    /// `lhs := rhs` レジスタ・メモリ更新
-    RegAssign(Expr, Expr),
-    /// `lhs = rhs` 出力ポート割当
-    Assign(Expr, Expr),
-    /// `par { ... }` `seq { ... }` `any { ... }` `alt { ... }`
-    BlockKind(BlockKind, Block),
-    Generate(Ident, Vec<Expr>),
-    Relay(Ident, Vec<Expr>),
-    Finish,
-    Goto(Ident),
-    /// match 文・case 節含むので Statement と Expr の両方で構成可能
-    Expr(Expr),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Copy)]
-pub enum BlockKind {
-    Par,
-    Seq,
-    Any,
-    Alt,
-}
-
-// ============================================================
-// 式
-// ============================================================
-
-pub type Expr = Spanned<Expr_>;
-
-// Spanned<>にするのを一括で行うため_をつけてある
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Expr_ {
-    /// 整数リテラルの未解釈ソース文字列
-    Int(String),
-    Str(String),
-    Bool(bool),
-    /// 識別子参照
-    Path(Ident),
-    /// `(e1, e2, ...)` または単独の括弧式
-    Tuple(Vec<Expr>),
-    Unit,
-    /// 単項 `~` `!` `-`
-    Unary(UnaryOp, Box<Expr>),
-    /// 二項演算
-    Binary(BinaryOp, Box<Expr>, Box<Expr>),
-    /// `f(args)` 関数呼び出し兼ビット切り出し（意味解析で区別）
-    Call(Box<Expr>, Vec<Expr>),
-    /// `e.field`
-    Field(Box<Expr>, Ident),
-    /// `if (cond) then else else_`
-    If(Box<Expr>, Box<Expr>, Option<Box<Expr>>),
-    /// `e match { case p => e ... }`
-    Match(Box<Expr>, Vec<MatchArm>),
-    /// 単独ブロック `{ ... }` を式として
-    Block(Block),
-    /// `new ModName`
-    New(Ident),
-    /// 解析失敗時のプレースホルダ
-    Error,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Copy)]
-pub enum UnaryOp {
-    /// ビットNOT
-    BitNot,
-    /// 論理NOT
-    LogNot,
-    /// 単項マイナス
-    Neg,
-    /// リダクション論理和 `|x`（パターン上は二項 `|` と区別が必要）
-    RedOr,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Copy)]
-pub enum BinaryOp {
-    LogOr,
-    LogAnd,
-    Eq,
-    Ne,
-    Lt,
-    Le,
-    Gt,
-    Ge,
-    BitOr,
-    BitXor,
-    BitAnd,
-    Shl,
-    Shr,
-    ShrLogical,
-    Concat,
-    Add,
-    Sub,
-    Mul,
-    /// 符号拡張 `n # x`
-    SignExt,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MatchArm {
-    pub pattern: Pattern,
-    pub body: Expr,
-    pub span: Span,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Pattern {
-    /// `case _ =>`
-    Wildcard,
-    /// `case ADD =>` 識別子（定数または束縛）
-    Ident(Ident),
-    /// `case 0x00 =>` リテラル
-    IntLit(String),
 }

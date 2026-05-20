@@ -12,6 +12,9 @@ use crate::symbol::{DefId, Symbol};
 pub enum ResolvedTo {
     Def(DefId),
     Builtin(&'static str),
+    /// `extends` 継承により外部モジュール/トレイトから取り込まれたメンバ
+    /// 定義位置を持たないため Goto/Hover の対象外とする
+    External,
     Unresolved,
 }
 

@@ -1,0 +1,42 @@
+/* (shift32.fsl) */
+
+module shift32 {
+  input    in: Bit(32)
+  input shamt: Bit(5)
+  output  out: Bit(32)
+
+  // shift left logical
+  def sll(in, shamt): Unit = {
+    val t1 = if (shamt(4) == 0b1) in(15, 0) ++ 0b0000_0000_0000_0000 else in;
+    val t2 = if (shamt(3) == 0b1) t1(23, 0) ++ 0b0000_0000 else t1;
+    val t3 = if (shamt(2) == 0b1) t2(27, 0) ++ 0b0000 else t2;
+    val t4 = if (shamt(1) == 0b1) t3(29, 0) ++ 0b00 else t3;
+    out = if (shamt(0) == 0b1) t4(30, 0) ++ 0b0 else t4;
+  }
+  
+  private def shift_right(in: Bit(32), shamt: Bit(5), fill: Bit(1)): Bit(32) = {
+    val fill02 = fill ++ fill;
+    val fill04 = fill02 ++ fill02;
+    val fill08 = fill04 ++ fill04;
+    val fill16 = fill08 ++ fill08;
+    val t1 = if (shamt(4) == 0b1) fill16 ++ in(31, 16) else in;
+    val t2 = if (shamt(3) == 0b1) fill08 ++ t1(31, 8) else t1;
+    val t3 = if (shamt(2) == 0b1) fill04 ++ t2(31, 4) else t2;
+    val t4 = if (shamt(1) == 0b1) fill02 ++ t3(31, 2) else t3;
+    if (shamt(0) == 0b1) fill ++ t4(31, 1) else t4
+  }
+
+  // shift right logical
+  def srl(in, shamt): Unit = {
+    out = shift_right(in, shamt, 0);
+  }
+
+  // shift right arithmetic
+  def sra(in, shamt): Unit = {
+    out = shift_right(in, shamt, in.msb);
+  }
+} // module shift32
+
+/* End of file (shift32.fsl) */
+
+

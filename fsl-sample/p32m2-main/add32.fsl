@@ -1,0 +1,18 @@
+/* (add32.fsl) */
+
+module add32 {
+   input     a: Bit(32)
+   input     b: Bit(32)
+   input   cin: Bit(1)
+   output  sum: Bit(32)
+   output cout: Bit(1)
+   def add(a, b, cin): Unit = {
+      val a_ex = 0b0 ++ a;
+      val b_ex = 0b0 ++ b;
+      val sum_ex = a_ex + b_ex + cin.toBit(33);
+      cout = sum_ex.msb;
+      sum = sum_ex(31, 0);
+   } // add
+} // module add32
+
+/* End of file (add32.fsl) */

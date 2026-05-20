@@ -156,10 +156,23 @@ pub enum Token {
     Hash,
 
     // ---- リテラル ----
-    #[regex(r"0b[01_]+", |lex| lex.slice().to_string())]
-    #[regex(r"0x[0-9a-fA-F_]+", |lex| lex.slice().to_string())]
-    #[regex(r"[0-9][0-9_]*", |lex| lex.slice().to_string())]
-    IntLit(String),
+    /// Int型リテラル
+    /// 先頭の`-`が二項演算子の可能性もあるため，ここでは`u64`
+    #[regex(r"[0-9][0-9_]*", |lex| {
+        let s = lex.slice().replace('_', ""); // _を除去
+        s.parse::<u64>().unwrap()
+    })]
+    IntLit(u64),
+
+    #[regex(r"0b[01_]+", |lex| {
+        let s = lex.slice()[2..].replace('_', ""); // "0b", "_"を除去
+        u64::from_str_radix(&s, 2).unwrap()
+    })]
+    #[regex(r"0x[0-9a-fA-F_]+", |lex| {
+        let s = lex.slice()[2..].replace('_', ""); // "0x", "_"を除去
+        u64::from_str_radix(&s, 16).unwrap()
+    })]
+    BitLit(u64),
 
     #[regex(r#""([^"\\]|\\.)*""#, |lex| lex.slice().to_string())]
     StringLit(String),
@@ -261,15 +274,48 @@ mod tests {
 
     #[test]
     fn integer_literals() {
-        let toks = kinds("0 100 0b1010 0xFF 1_000");
-        let lits: Vec<_> = toks
-            .into_iter()
-            .filter_map(|t| match t {
-                Token::IntLit(s) => Some(s),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(lits, vec!["0", "100", "0b1010", "0xFF", "1_000"]);
+        let toks = kinds("0 1 10 1_0_0 1000 -0 -1 -10 -1_0_0 -1000");
+        assert_eq!(
+            toks,
+            vec![
+                Token::IntLit(0),
+                Token::IntLit(1),
+                Token::IntLit(10),
+                Token::IntLit(100),
+                Token::IntLit(1000),
+                Token::Minus,
+                Token::IntLit(0),
+                Token::Minus,
+                Token::IntLit(1),
+                Token::Minus,
+                Token::IntLit(10),
+                Token::Minus,
+                Token::IntLit(100),
+                Token::Minus,
+                Token::IntLit(1000),
+            ]
+        );
+    }
+
+    #[test]
+    fn bit_literals() {
+        let toks = kinds("0b0 0b1 0b10 0b1_0_0 0b1000 0x0 0x1 0xf 0x0f 0x1f 0x0_f");
+        assert_eq!(
+            toks,
+            vec![
+                Token::BitLit(0),
+                Token::BitLit(1),
+                Token::BitLit(0b10),
+                Token::BitLit(0b100),
+                Token::BitLit(0b1000),
+                Token::BitLit(0),
+                Token::BitLit(1),
+                Token::BitLit(0xf),
+                Token::BitLit(0xf),
+                Token::BitLit(0x1f),
+                Token::BitLit(0xf),
+            ]
+        );
     }
 
     #[test]

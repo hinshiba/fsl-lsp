@@ -92,16 +92,27 @@ impl ScopeArena {
     }
 
     /// `offset` を内包する最深スコープを返す
+    ///
+    /// 補完カーソルはしばしばスコープ終端に置かれる  特に閉じ `}` を欠く
+    /// 編集途中のブロックは終端がカーソル位置と一致する  半開区間で内包する
+    /// 子が無い場合は終端がカーソルに一致する子へも降り，終端での補完を支える．
     pub fn scope_at_offset(&self, offset: usize) -> Option<ScopeId> {
         let root = self.root()?;
         let mut current = root;
         // 子に降りられる限り降りる
         loop {
-            let next = self.scopes[current.0 as usize]
-                .children
+            let children = &self.scopes[current.0 as usize].children;
+            let next = children
                 .iter()
                 .copied()
-                .find(|c| contains(&self.scopes[c.0 as usize].span, offset));
+                .find(|c| contains(&self.scopes[c.0 as usize].span, offset))
+                // 内包する子が無ければ終端がカーソルに一致する末尾の子へ降りる
+                .or_else(|| {
+                    children.iter().copied().rev().find(|c| {
+                        let span = &self.scopes[c.0 as usize].span;
+                        span.start <= offset && offset == span.end
+                    })
+                });
             match next {
                 Some(c) => current = c,
                 None => return Some(current),

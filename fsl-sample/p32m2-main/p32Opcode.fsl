@@ -1,0 +1,58 @@
+/* (p32Opcode.fsl) */
+
+trait p32Opcode {
+ 
+  /* R (SPECIAL) */
+  /*
+   * funct: IR<5:0>
+   */
+  val SLL     = 0b000000 // 0x00
+  val SRL     = 0b000010 // 0x02
+  val SRA     = 0b000011 // 0x03
+  val SLLV    = 0b000100 // 0x04
+  val SRLV    = 0b000110 // 0x06
+  val SRAV    = 0b000111 // 0x07
+  val JR      = 0b001000 // 0x08
+  val JALR    = 0b001001 // 0x09
+  val SYSCALL = 0b001100 // 0x0c
+  val MFHI    = 0b010000 // 0x10
+  val MFLO    = 0b010010 // 0x12
+  val MULT    = 0b011000 // 0x18
+  val MULTU   = 0b011001 // 0x19
+  val DIV     = 0b011010 // 0x1a
+  val DIVU    = 0b011011 // 0x1b
+  val ADD     = 0b100000 // 0x20
+  val ADDU    = 0b100001 // 0x21
+  val SUB     = 0b100010 // 0x22
+  val SUBU    = 0b100011 // 0x23
+  val AND     = 0b100100 // 0x24
+  val OR      = 0b100101 // 0x25
+  val XOR     = 0b100110 // 0x26
+  val NOR     = 0b100111 // 0x27
+  val SLT     = 0b101010 // 0x2a
+  val SLTU    = 0b101011 // 0x2b
+ 
+  /*
+   * opcode: IR<31:26> 
+   */
+  val SPECIAL = 0b000000 // 0x00
+  val J       = 0b000010 // 0x02
+  val JAL     = 0b000011 // 0x03
+  val BEQ     = 0b000100 // 0x04
+  val BNE     = 0b000101 // 0x05
+  val ADDI    = 0b001000 // 0x08
+  val ADDIU   = 0b001001 // 0x09
+  val SLTI    = 0b001010 // 0x0a
+  val SLTIU   = 0b001011 // 0x0b
+  val ANDI    = 0b001100 // 0x0c
+  val ORI     = 0b001101 // 0x0d
+  val XORI    = 0b001110 // 0x0e
+  val LUI     = 0b001111 // 0x0f
+  val LB      = 0b100000 // 0x20
+  val LW      = 0b100011 // 0x23
+  val SB      = 0b101000 // 0x28
+  val SW      = 0b101011 // 0x2b
+ 
+} // trait Opcode
+
+/* End of file (Opcode.fsl) */
