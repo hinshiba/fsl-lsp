@@ -4,7 +4,7 @@ ext_code_run := "pnpm --dir extension/fsl-lsp-code run"
 
 
 copy-bin:
-    cargo build --release
+    cargo build -p fsl-ls --release
     {{ ext_code_run }} copy-bin
 
 checks:
