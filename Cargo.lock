@@ -290,7 +290,6 @@ dependencies = [
  "clap",
  "fsl-analyzer",
  "fsl-lexer",
- "fsl-ls",
  "fsl-parser",
 ]
 
