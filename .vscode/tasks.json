@@ -42,26 +42,6 @@
                 "group": "watch",
                 "reveal": "never"
             }
-        },
-        {
-            "type": "npm",
-            "script": "watch-tests",
-            "path": "extension/fsl-lsp-code",
-            "problemMatcher": "$tsc-watch",
-            "isBackground": true,
-            "presentation": {
-                "reveal": "never",
-                "group": "watchers"
-            },
-            "group": "build"
-        },
-        {
-            "label": "tasks: watch-tests",
-            "dependsOn": [
-                "npm: watch",
-                "npm: watch-tests"
-            ],
-            "problemMatcher": []
         }
     ]
 }
