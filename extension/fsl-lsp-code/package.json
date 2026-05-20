@@ -3,6 +3,11 @@
   "displayName": "fsl-lsp-code",
   "description": "fsl言語サービスを提供",
   "version": "0.2.0",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "github.com:hinshiba/fsl-lsp.git"
+  },
   "engines": {
     "vscode": "^1.116.0"
   },
@@ -39,7 +44,6 @@
     "watch:tsc": "tsc --noEmit --watch --project tsconfig.json",
     "copy-bin": "node scripts/copy-bin.ts",
     "pack": "vsce package --no-dependencies",
-    "vscode:prepublish": "node -e \"console.error('use \\`just publish\\` from workspace root instead of vsce directly'); process.exit(1)\"",
     "esbuild": "node esbuild.js",
     "check-types": "tsc --noEmit",
     "lint": "eslint src"
