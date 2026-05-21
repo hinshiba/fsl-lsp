@@ -10,7 +10,7 @@ members = [
     "crates/fsl-analyzer",
     "crates/fsl-ls",
     "crates/fsl-playground",
-    # "crates/fsl-formatter",
+    "crates/fsl-fmt",
 ]
 resolver = "3"
 

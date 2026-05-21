@@ -8,6 +8,7 @@ pub mod parsers;
 pub use ast::*;
 pub use parsers::{ParseError, ParseResult, parse_token};
 
+pub use chumsky::span::Spanned;
 pub use fsl_lexer::Span;
 
 /// ソース文字列を直接受け取るエントリポイント．

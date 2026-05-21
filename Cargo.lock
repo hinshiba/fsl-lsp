@@ -258,6 +258,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "fsl-fmt"
+version = "0.1.0"
+dependencies = [
+ "fsl-lexer",
+ "fsl-parser",
+]
+
+[[package]]
 name = "fsl-lexer"
 version = "0.1.0"
 dependencies = [

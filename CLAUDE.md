@@ -7,10 +7,18 @@
 ```
 fsl-parser -> fsl-lexer
 fsl-lsp --> fsl-analyzer -> fsl-parser
-fsl-formatter --> fsl-parser
+fsl-fmt --> fsl-parser
 ```
 
+`FSL`のサンプルは @fsl-sample に存在する．`.new.fsl`形式のファイルは無視すること．
+
+## コマンド
+
+- `just pack`: `fsl-ls`をビルドし，拡張機能をパッケージする
+
 ## 規約
+
+自力で解決するのが難しい問題や同じ問題に4回以上悩んでいる場合はUserに伝えること．
 
 ### スタイル
 

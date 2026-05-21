@@ -1,7 +1,7 @@
 /* (add32.fsl) */
 
 module add32 {
-   input     a: Bit(32)
+   input     a: Bit(32) // hoge
    input     b: Bit(32)
    input   cin: Bit(1)
    output  sum: Bit(32)
@@ -10,8 +10,9 @@ module add32 {
       val a_ex = 0b0 ++ a;
       val b_ex = 0b0 ++ b;
       val sum_ex = a_ex + b_ex + cin.toBit(33);
-      cout = sum_ex.msb;
-      sum = sum_ex(31, 0);
+      cout = sum_ex.msb; // bar
+      sum = sum_ex(31, 0); // huga
+      /* foo <- ここまではブロック内にあるべき */
    } // add
 } // module add32
 
