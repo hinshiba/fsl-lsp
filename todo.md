@@ -1,8 +1,12 @@
 ## util
 
-copy-bin の警告の削減
-esbuild のcjs化
 fsl-playground の修理
+
+## 0.2.1
+
+inline 未宣言シンボルエラー修正
+
+
 
 ## 0.3.0目標
 
