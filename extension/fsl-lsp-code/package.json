@@ -16,7 +16,7 @@
     "Programming Languages"
   ],
   "activationEvents": [],
-  "main": "./dist/extension.js",
+  "main": "./dist/extension.cjs",
   "contributes": {
     "languages": [
       {
