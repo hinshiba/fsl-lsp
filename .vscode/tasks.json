@@ -6,6 +6,7 @@
         {
             "label": "watch",
             "dependsOn": [
+                "just: copy-bin",
                 "npm: watch:tsc",
                 "npm: watch:esbuild"
             ],
@@ -15,6 +16,15 @@
             "group": {
                 "kind": "build",
                 "isDefault": true
+            }
+        },
+        {
+            "label": "just: copy-bin",
+            "type": "shell",
+            "command": "just copy-bin",
+            "problemMatcher": [],
+            "presentation": {
+                "reveal": "silent"
             }
         },
         {
