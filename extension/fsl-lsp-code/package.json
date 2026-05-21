@@ -3,9 +3,15 @@
   "displayName": "fsl-lsp-code",
   "description": "fsl言語サービスを提供",
   "version": "0.2.0",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/hinshiba/fsl-lsp.git"
+  },
   "engines": {
     "vscode": "^1.116.0"
   },
+  "type": "module",
   "categories": [
     "Programming Languages"
   ],
@@ -34,25 +40,18 @@
     ]
   },
   "scripts": {
-    "vscode:prepublish": "pnpm run package",
-    "prepac": "pnpm run copy-bin",
-    "pac": "vsce package --no-dependencies",
-    "copy-bin": "node scripts/copy-bin.ts",
-    "compile": "pnpm run check-types && pnpm run lint && node esbuild.js",
     "watch": "npm-run-all -p watch:*",
-    "watch:esbuild": "node esbuild.js --watch",
+    "watch:esbuild": "node scripts/esbuild.ts --watch",
     "watch:tsc": "tsc --noEmit --watch --project tsconfig.json",
-    "package": "pnpm run check-types && pnpm run lint && node esbuild.js --production",
-    "compile-tests": "tsc -p . --outDir out",
-    "watch-tests": "tsc -p . -w --outDir out",
-    "pretest": "pnpm run compile-tests && pnpm run compile && pnpm run lint",
+    "copy-bin": "node scripts/copy-bin.ts",
+    "pack": "vsce package --no-dependencies",
+    "esbuild": "node scripts/esbuild.ts",
     "check-types": "tsc --noEmit",
-    "lint": "eslint src",
-    "test": "vscode-test"
+    "lint": "eslint src"
   },
   "devDependencies": {
     "@types/mocha": "^10.0.10",
-    "@types/node": "22.x",
+    "@types/node": "~22.19.17",
     "@types/vscode": "^1.116.0",
     "@vscode/test-cli": "^0.0.12",
     "@vscode/test-electron": "^2.5.2",

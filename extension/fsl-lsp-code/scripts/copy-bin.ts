@@ -1,3 +1,7 @@
+/**
+ * Rustのビルド済みバイナリをVSCode拡張機能用にコピーする
+ */
+
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import fs, { copyFileSync } from "node:fs"
@@ -12,8 +16,8 @@ const extensionBinRoot = path.join(extensionRoot, "bin");
 type CopyEntry = { target: string, fromPath: string; toPath: string };
 
 const entries: CopyEntry[] = [
-    { target: "win", fromPath: path.join(lsBinRoot, "debug/fsl-ls.exe"), toPath: path.join(extensionBinRoot, "win/fsl-ls.exe") },
-    { target: "linux", fromPath: path.join(lsBinRoot, "x86_64-unknown-linux-gnu/debug/fsl-ls"), toPath: path.join(extensionBinRoot, "linux/fsl-ls") },
+    { target: "win", fromPath: path.join(lsBinRoot, "release/fsl-ls.exe"), toPath: path.join(extensionBinRoot, "win/fsl-ls.exe") },
+    { target: "linux", fromPath: path.join(lsBinRoot, "x86_64-unknown-linux-gnu/release/fsl-ls"), toPath: path.join(extensionBinRoot, "linux/fsl-ls") },
 ];
 
 
