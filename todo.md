@@ -3,7 +3,6 @@
 copy-bin の警告の削減
 esbuild のcjs化
 fsl-playground の修理
-cargo zigbuild のjustへの追記
 
 ## 0.3.0目標
 
