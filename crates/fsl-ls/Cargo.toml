@@ -17,3 +17,4 @@ tokio = { version = "1.52", features = [
 tokio-macros = { version = "2.7" }
 line-index = "0.1.2"
 fsl-analyzer = { path = "../fsl-analyzer" }
+fsl-fmt = { path = "../fsl-fmt" }

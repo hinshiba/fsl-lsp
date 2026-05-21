@@ -16,6 +16,7 @@ use tower_lsp::{Client, LanguageServer, LspService, Server};
 
 mod completion;
 mod definition;
+mod format;
 mod hover;
 mod on_change;
 mod pos;
@@ -77,6 +78,7 @@ impl LanguageServer for Backend {
                     ..Default::default()
                 }),
                 definition_provider: Some(OneOf::Left(true)),
+                document_formatting_provider: Some(OneOf::Left(true)),
                 ..Default::default()
             },
             ..Default::default()
@@ -108,6 +110,13 @@ impl LanguageServer for Backend {
         params: GotoDefinitionParams,
     ) -> Result<Option<GotoDefinitionResponse>> {
         Ok(self.handle_goto_definition(params).await)
+    }
+
+    async fn formatting(
+        &self,
+        params: DocumentFormattingParams,
+    ) -> Result<Option<Vec<TextEdit>>> {
+        Ok(self.handle_formatting(params).await)
     }
 
     /* ================ 変更系 ================
