@@ -3,8 +3,9 @@
 //! 公開 API は [`format`] のみ。パース／レキサーエラー時は何も返さない。
 
 use fsl_parser::{
-    BinaryOp, Expr, Expr_, Field, FnDef, FslType, FslType_, InputDecl, Item, MemDecl, ModuleDef,
-    NewInstance, OutputDecl, Param, Pattern, RegDecl, Spanned, TraitDef, UnaryOp, ValDecl, ValLhs,
+    BinaryOp, CompositeDef, CompositeField, Expr, Expr_, Field, FnDef, FslType, FslType_,
+    InputDecl, Item, MemDecl, ModuleDef, NewInstance, OutputDecl, OutputFnDecl, Param, Pattern,
+    RegDecl, Spanned, StageDef, StageItem, StateDef, TraitDef, UnaryOp, ValDecl, ValLhs,
 };
 
 const INDENT: &str = "  ";
@@ -32,15 +33,16 @@ struct Writer<'a> {
     out: String,
     /// (start_pos, comment_text) を位置順に保持。`/* */` は内部改行を含み得る。
     comments: Vec<(usize, String)>,
-    /// 次に出力するコメントのインデックス
-    next_comment: usize,
+    /// 各コメントが既に出力済みか。並び替えで出力順とソース順が乖離するため、
+    /// 単一カーソルではなくフラグ配列で管理する。
+    emitted: Vec<bool>,
 }
 
 impl<'a> Writer<'a> {
     fn new(src: &'a str) -> Self {
         // ソースを直接 lex してコメントだけ収集する（パーサは trivia を捨てているため）
         let lex_result = fsl_lexer::lex(src);
-        let comments = lex_result
+        let comments: Vec<(usize, String)> = lex_result
             .oks
             .into_iter()
             .filter_map(|t| match t.tok {
@@ -50,11 +52,12 @@ impl<'a> Writer<'a> {
                 _ => None,
             })
             .collect();
+        let emitted = vec![false; comments.len()];
         Writer {
             src,
             out: String::new(),
             comments,
-            next_comment: 0,
+            emitted,
         }
     }
 
@@ -69,20 +72,100 @@ impl<'a> Writer<'a> {
 
     /// 文の「インラインコメント取り込み上限」を求める。
     /// 入れ子ブロックがあればその開始位置（内部は内側で処理）、
-    /// なければ物理行末（同一行末トレイリングコメントを取り込む）。
-    /// ただし呼び出し側のブロック境界を越えないように clamp する。
+    /// なければ span.end まで（同一物理行末のトレイリングは別経路で inline 出力）。
     fn inline_limit_for_expr(&self, e: &Expr, block_end: usize) -> usize {
         match first_nested_block_start_in_expr(e) {
             Some(p) => p,
-            None => self.line_end_after(e.span.end).min(block_end),
+            None => e.span.end.min(block_end),
         }
     }
 
     fn inline_limit_for_field(&self, f: &Field, span_end: usize, body_end: usize) -> usize {
         match first_nested_block_start_in_field(f) {
             Some(p) => p,
-            None => self.line_end_after(span_end).min(body_end),
+            None => span_end.min(body_end),
         }
+    }
+
+    /// `span_end` 以降〜同じ物理行末 (`\n` 直前) にある未出力コメントを 1 つ取り出す。
+    /// `upper` は呼び出し側ブロックの上限位置で、これを越えて取り込まない（親 `}` を越えないため）。
+    /// 入れ子ブロックを持たない文のトレイリングコメントを「インライン維持」する用途。
+    fn take_trailing_inline_comment(&mut self, span_end: usize, upper: usize) -> Option<String> {
+        let line_end = self.line_end_after(span_end).min(upper);
+        for i in 0..self.comments.len() {
+            if self.emitted[i] {
+                continue;
+            }
+            let cpos = self.comments[i].0;
+            if cpos >= line_end {
+                break;
+            }
+            if cpos >= span_end {
+                self.emitted[i] = true;
+                return Some(self.comments[i].1.clone());
+            }
+        }
+        None
+    }
+
+    /// ソース範囲 `[lo, hi)` 中で「空行」と数えるべき行数。
+    /// コメントは区切りとみなし、各区間で改行数 - 1 を独立に数えて加算する。
+    /// 例: `\n\n` → 1 空行、`\n\n\n` → 2 空行、`\n` → 0 空行。
+    fn count_blank_lines_between(&self, lo: usize, hi: usize) -> usize {
+        if lo >= hi {
+            return 0;
+        }
+        let slice = &self.src[lo..hi];
+        // コメント位置を取り出してセクション分割する。コメント自身は「コンテンツ」とみなす。
+        let mut cuts: Vec<(usize, usize)> = Vec::new();
+        for (cpos, ctext) in &self.comments {
+            if *cpos >= lo && *cpos < hi {
+                let start = cpos - lo;
+                let end = start + ctext.len();
+                cuts.push((start, end.min(slice.len())));
+            }
+        }
+        let mut segments: Vec<&str> = Vec::new();
+        let mut cursor = 0;
+        for (s, e) in &cuts {
+            if cursor < *s {
+                segments.push(&slice[cursor..*s]);
+            }
+            cursor = *e;
+        }
+        if cursor < slice.len() {
+            segments.push(&slice[cursor..]);
+        }
+        if segments.is_empty() {
+            segments.push(slice);
+        }
+        let mut total = 0;
+        for seg in segments {
+            let n = seg.matches('\n').count();
+            total += n.saturating_sub(1);
+        }
+        total
+    }
+
+    /// `out` の現在書き込み行頭からの文字数 (0-indexed col)。
+    fn current_line_col(&self) -> usize {
+        match self.out.rfind('\n') {
+            Some(p) => self.out.len() - p - 1,
+            None => self.out.len(),
+        }
+    }
+
+    /// インライン末尾コメントを emit する。
+    /// 最低 1 スペース + `/` が 0-indexed 偶数列に揃うようパディング。
+    fn emit_inline_trailing(&mut self, text: &str) {
+        let col = self.current_line_col();
+        // 最低 1 スペース後の `/` 候補列
+        let min_target = col + 1;
+        let target = if min_target % 2 == 0 { min_target } else { min_target + 1 };
+        for _ in col..target {
+            self.out.push(' ');
+        }
+        self.out.push_str(text);
     }
 
     /// 整形を終了し、末尾に残ったコメントを行頭に流し込んで返す。
@@ -91,26 +174,35 @@ impl<'a> Writer<'a> {
         self.out
     }
 
-    /// `pos` より前にあるコメントをすべて行頭に書き出す。
+    /// `pos` より前にあって未出力のコメントを行頭に書き出す（ソース順）。
     /// 各コメントは独立行とし、ブロックコメント内の既存改行は維持。
     fn flush_comments_before(&mut self, pos: usize, depth: usize) {
-        while self.next_comment < self.comments.len() && self.comments[self.next_comment].0 < pos {
-            let (_, text) = &self.comments[self.next_comment].clone();
+        for i in 0..self.comments.len() {
+            if self.emitted[i] {
+                continue;
+            }
+            if self.comments[i].0 >= pos {
+                break;
+            }
+            let text = self.comments[i].1.clone();
             self.write_indent(depth);
-            self.out.push_str(text);
+            self.out.push_str(&text);
             self.out.push('\n');
-            self.next_comment += 1;
+            self.emitted[i] = true;
         }
     }
 
-    /// 残った全コメントを書き出す（ファイル末尾）。
+    /// 残った未出力コメントを書き出す（ファイル末尾）。
     fn flush_remaining_comments(&mut self, depth: usize) {
-        while self.next_comment < self.comments.len() {
-            let (_, text) = &self.comments[self.next_comment].clone();
+        for i in 0..self.comments.len() {
+            if self.emitted[i] {
+                continue;
+            }
+            let text = self.comments[i].1.clone();
             self.write_indent(depth);
-            self.out.push_str(text);
+            self.out.push_str(&text);
             self.out.push('\n');
-            self.next_comment += 1;
+            self.emitted[i] = true;
         }
     }
 
@@ -125,13 +217,18 @@ impl<'a> Writer<'a> {
     // ============================================================
 
     fn write_unit(&mut self, items: &[Spanned<Item>]) {
-        for (i, item) in items.iter().enumerate() {
-            // トップレベルではアイテム前のコメントのみ排出（中身は item 自身が depth+1 で処理）
+        let mut prev_end: Option<usize> = None;
+        for item in items.iter() {
+            // トップレベルでもアイテム前のコメントを排出（中身は item 自身が depth+1 で処理）
             self.flush_comments_before(item.span.start, 0);
-            if i > 0 {
-                self.out.push('\n');
+            if let Some(prev) = prev_end {
+                let blanks = self.count_blank_lines_between(prev, item.span.start).min(1);
+                for _ in 0..blanks {
+                    self.out.push('\n');
+                }
             }
             self.write_item(&item.inner, item.span.end, 0);
+            prev_end = Some(item.span.end);
         }
     }
 
@@ -168,30 +265,127 @@ impl<'a> Writer<'a> {
 
     /// `{ ... }` フィールドブロックを整形。空かつコメントなしなら ` {}` 単一行。
     /// 末尾コメントはブロック境界を越えず `}` の直前にとどめる。
+    /// アイテムは 4 グループ (I/O → OutputFn → Reg/Mem/Val/Composite → Fn/Stage/Always/Initial) に
+    /// 安定ソート、グループ境界に空行 2 行。
     fn write_fields(&mut self, items: &[Spanned<Field>], body_end: usize, depth: usize) {
         if items.is_empty() && !self.has_comments_before(body_end) {
             self.out.push_str(" {}");
             return;
         }
         self.out.push_str(" {\n");
-        for it in items {
-            // フィールド内インラインコメント＋同一行末トレイリングコメントを上に持ち上げる。
-            // 入れ子ブロックがある場合はそのブロック開始位置までしか掃かない。
-            let limit = self.inline_limit_for_field(&it.inner, it.span.end, body_end);
-            self.flush_comments_before(limit, depth + 1);
+
+        // 並び替えに備えて各 field にコメントを事前 attach
+        let attached = self.attach_comments_to_fields(items, body_end);
+
+        // グループ番号 + 元順序で安定ソート
+        let mut order: Vec<usize> = (0..items.len()).collect();
+        order.sort_by_key(|&i| (field_group(&items[i].inner), i));
+
+        let mut prev: Option<(u8, usize)> = None;
+        for &i in &order {
+            let cur_g = field_group(&items[i].inner);
+            if let Some((pg, p_idx)) = prev {
+                // 同一グループ: ソース空行を max 1 で保存。
+                // グループ境界 (ソース順維持): ソース空行を max 2 で保存。
+                // グループ境界 (並び替え発生): 強制 2 空行（視覚分離のため）。
+                let prev_end = items[p_idx].span.end;
+                let next_start = items[i].span.start;
+                let blanks = if pg != cur_g {
+                    if prev_end > next_start {
+                        2
+                    } else {
+                        self.count_blank_lines_between(prev_end, next_start).min(2)
+                    }
+                } else {
+                    self.count_blank_lines_between(prev_end, next_start).min(1)
+                };
+                for _ in 0..blanks {
+                    self.out.push('\n');
+                }
+            }
+            // attached leading コメントを emit
+            for &cidx in &attached[i].0 {
+                if !self.emitted[cidx] {
+                    let text = self.comments[cidx].1.clone();
+                    self.write_indent(depth + 1);
+                    self.out.push_str(&text);
+                    self.out.push('\n');
+                    self.emitted[cidx] = true;
+                }
+            }
+            // field 本体
             self.write_indent(depth + 1);
-            self.write_field(&it.inner, depth + 1);
+            self.write_field(&items[i].inner, depth + 1);
+            // attached trailing inline コメントを emit
+            if let Some(tidx) = attached[i].1 {
+                if !self.emitted[tidx] {
+                    let text = self.comments[tidx].1.clone();
+                    self.emit_inline_trailing(&text);
+                    self.emitted[tidx] = true;
+                }
+            }
             self.out.push('\n');
+            prev = Some((cur_g, i));
         }
-        // ブロック内末尾のコメントを `}` の直前に排出
+
+        // ブロック内末尾の未出力コメントを `}` 直前に排出
         self.flush_comments_before(body_end, depth + 1);
         self.write_indent(depth);
         self.out.push('}');
     }
 
+    /// 各 field に対し、リーディングコメント (Vec<index>) とトレイリングインラインコメント
+    /// (Option<index>) を attach。並び替え後でも元の所属を保てるように事前計算する。
+    fn attach_comments_to_fields(
+        &self,
+        items: &[Spanned<Field>],
+        body_end: usize,
+    ) -> Vec<(Vec<usize>, Option<usize>)> {
+        let n = items.len();
+        let mut result: Vec<(Vec<usize>, Option<usize>)> =
+            (0..n).map(|_| (Vec::new(), None)).collect();
+        let mut next = 0;
+
+        for i in 0..n {
+            // limit = inline_limit_for_field 相当: 入れ子ブロック開始位置 or span.end
+            let limit = self.inline_limit_for_field(&items[i].inner, items[i].span.end, body_end);
+            let span_end = items[i].span.end;
+            let line_end = self.line_end_after(span_end).min(body_end);
+
+            // 既存 emitted を尊重しつつ、未 attach のコメントを leading に追加
+            while next < self.comments.len() {
+                if self.emitted[next] {
+                    next += 1;
+                    continue;
+                }
+                if self.comments[next].0 < limit {
+                    result[i].0.push(next);
+                    next += 1;
+                } else {
+                    break;
+                }
+            }
+
+            // trailing inline (入れ子ブロックを持たない field のみ)
+            let has_nested = first_nested_block_start_in_field(&items[i].inner).is_some();
+            if !has_nested && next < self.comments.len() && !self.emitted[next] {
+                let cpos = self.comments[next].0;
+                if cpos >= span_end && cpos < line_end {
+                    result[i].1 = Some(next);
+                    next += 1;
+                }
+            }
+        }
+
+        result
+    }
+
     /// `pos` より前に未出力コメントが残っているか。
     fn has_comments_before(&self, pos: usize) -> bool {
-        self.next_comment < self.comments.len() && self.comments[self.next_comment].0 < pos
+        self.comments
+            .iter()
+            .enumerate()
+            .any(|(i, c)| !self.emitted[i] && c.0 < pos)
     }
 
     // ============================================================
@@ -215,9 +409,86 @@ impl<'a> Writer<'a> {
             Field::Fn(f) => self.write_fn(f, depth),
             Field::Mem(m) => self.write_mem(m, depth),
             Field::NewInstance(n) => self.write_new_instance(n),
-            // TODO: OutputFn, Composite, Stage, Error
-            _ => {}
+            Field::OutputFn(o) => self.write_output_fn(o),
+            Field::Stage(s) => self.write_stage(s, depth),
+            Field::Composite(c) => self.write_composite(c),
+            Field::Error => {}
         }
+    }
+
+    /// `output def name(params): T` または `output def name()` の整形。
+    fn write_output_fn(&mut self, o: &OutputFnDecl) {
+        self.out.push_str("output def ");
+        self.out.push_str(&o.name.inner);
+        self.out.push('(');
+        self.write_params(&o.params);
+        self.out.push(')');
+        if let Some(ret) = &o.ret {
+            self.out.push_str(": ");
+            self.write_type(ret);
+        }
+    }
+
+    /// `stage name(params) { body }` の整形。
+    fn write_stage(&mut self, s: &StageDef, depth: usize) {
+        self.out.push_str("stage ");
+        self.out.push_str(&s.name.inner);
+        self.out.push('(');
+        self.write_params(&s.params);
+        self.out.push(')');
+        // 空ステージは `{}` 単一行
+        if s.body.is_empty() {
+            self.out.push_str(" {}");
+            return;
+        }
+        self.out.push_str(" {\n");
+        for item in &s.body {
+            self.write_indent(depth + 1);
+            self.write_stage_item(&item.inner, depth + 1);
+            self.out.push('\n');
+        }
+        self.write_indent(depth);
+        self.out.push('}');
+    }
+
+    fn write_stage_item(&mut self, item: &StageItem, depth: usize) {
+        match item {
+            StageItem::Reg(r) => self.write_reg(r, depth),
+            StageItem::State(s) => self.write_state(s, depth),
+            StageItem::Expr(e) => self.write_expr_owned(e, depth),
+        }
+    }
+
+    fn write_state(&mut self, s: &StateDef, depth: usize) {
+        self.out.push_str("state ");
+        self.out.push_str(&s.name.inner);
+        self.out.push_str(" = ");
+        self.write_expr(&s.body, depth);
+    }
+
+    /// `Expr` を所有値経由で書き出す（`StageItem::Expr(Expr)` の Expr を直接渡せるように）。
+    fn write_expr_owned(&mut self, e: &Expr, depth: usize) {
+        self.write_expr(e, depth);
+    }
+
+    /// `type name(field: T, ...)` の整形。
+    fn write_composite(&mut self, c: &CompositeDef) {
+        self.out.push_str("type ");
+        self.out.push_str(&c.name.inner);
+        self.out.push('(');
+        for (i, f) in c.fields.iter().enumerate() {
+            if i > 0 {
+                self.out.push_str(", ");
+            }
+            self.write_composite_field(f);
+        }
+        self.out.push(')');
+    }
+
+    fn write_composite_field(&mut self, f: &CompositeField) {
+        self.out.push_str(&f.name.inner);
+        self.out.push_str(": ");
+        self.write_type(&f.ty);
     }
 
     fn write_input(&mut self, i: &InputDecl) {
@@ -352,7 +623,19 @@ impl<'a> Writer<'a> {
             }
             Expr_::Unary(op, rhs) => {
                 self.out.push_str(unary_op_str(*op));
-                self.write_expr(rhs, depth);
+                // unary は全 binary より結合度が強いので binary 子は要 ()
+                // また unary 連続 (`~|x`) は FSL コンパイラ非対応なので unary 子も要 ()
+                let needs_parens = matches!(
+                    &rhs.inner,
+                    Expr_::Binary(_, _, _) | Expr_::Unary(_, _)
+                );
+                if needs_parens {
+                    self.out.push('(');
+                    self.write_expr(rhs, depth);
+                    self.out.push(')');
+                } else {
+                    self.write_expr(rhs, depth);
+                }
             }
             Expr_::Call(callee, args) => {
                 self.write_expr(callee, depth);
@@ -470,11 +753,16 @@ impl<'a> Writer<'a> {
         }
         self.out.push_str("{\n");
         for s in stmts {
-            // 文内インラインコメント＋同一行末トレイリングコメントを上に持ち上げる。
+            // 式内コメントは直上に持ち上げ、同一物理行末のトレイリングはインライン維持。
             let limit = self.inline_limit_for_expr(s, block_end);
             self.flush_comments_before(limit, depth + 1);
             self.write_indent(depth + 1);
             self.write_expr(s, depth + 1);
+            if first_nested_block_start_in_expr(s).is_none() {
+                if let Some(text) = self.take_trailing_inline_comment(s.span.end, block_end) {
+                    self.emit_inline_trailing(&text);
+                }
+            }
             self.out.push('\n');
         }
         // ブロック末尾コメントを `}` 直前に
@@ -579,6 +867,26 @@ fn first_nested_block_start_in_expr(e: &Expr) -> Option<usize> {
             args.iter().filter_map(first_nested_block_start_in_expr).min()
         }
         _ => None,
+    }
+}
+
+/// フィールドの並び替えグループ番号。小さいほど先頭。
+/// G0: I/O (Input, Output)
+/// G1: OutputFn (出力関数)
+/// G2: 宣言 (Reg, Mem, Val, NewInstance, Composite)
+/// G3: 実装 (Fn, Stage, Always, Initial)
+/// G4: その他 (Error など)
+fn field_group(f: &Field) -> u8 {
+    match f {
+        Field::Input(_) | Field::Output(_) => 0,
+        Field::OutputFn(_) => 1,
+        Field::Reg(_)
+        | Field::Mem(_)
+        | Field::Val(_)
+        | Field::NewInstance(_)
+        | Field::Composite(_) => 2,
+        Field::Fn(_) | Field::Stage(_) | Field::Always(_) | Field::Initial(_) => 3,
+        Field::Error => 4,
     }
 }
 
@@ -868,8 +1176,173 @@ mod tests {
     }
 
     #[test]
-    fn blank_line_between_top_level_items() {
+    fn no_blank_line_between_adjacent_top_level_items() {
+        // ソースに空行がない場合は出力にも空行を入れない（新仕様）。
         let src = "module A {} module B {}";
+        let expected = "module A {}\nmodule B {}\n";
+        assert_eq!(format(src), Some(expected.to_string()));
+    }
+
+    #[test]
+    fn one_blank_line_preserved_between_top_level_items() {
+        let src = "module A {}\n\nmodule B {}";
+        let expected = "module A {}\n\nmodule B {}\n";
+        assert_eq!(format(src), Some(expected.to_string()));
+    }
+
+    #[test]
+    fn output_fn_with_return_type() {
+        let src = "module M { output def f(a, b): Bit(8) }";
+        let expected = "module M {\n  output def f(a, b): Bit(8)\n}\n";
+        assert_eq!(format(src), Some(expected.to_string()));
+    }
+
+    #[test]
+    fn output_fn_without_return_type() {
+        let src = "module M { output def halt() }";
+        let expected = "module M {\n  output def halt()\n}\n";
+        assert_eq!(format(src), Some(expected.to_string()));
+    }
+
+    #[test]
+    fn stage_with_body() {
+        let src = "module M { stage s(a: Bit(8)) { _display(\"hi\", a) } }";
+        let expected = concat!(
+            "module M {\n",
+            "  stage s(a: Bit(8)) {\n",
+            "    _display(\"hi\", a)\n",
+            "  }\n",
+            "}\n",
+        );
+        assert_eq!(format(src), Some(expected.to_string()));
+    }
+
+    #[test]
+    fn composite_type_decl() {
+        let src = "module M { type pair(x: Bit(8), y: Bit(8)) }";
+        let expected = "module M {\n  type pair(x: Bit(8), y: Bit(8))\n}\n";
+        assert_eq!(format(src), Some(expected.to_string()));
+    }
+
+    #[test]
+    fn reorder_full_four_groups() {
+        // 4 グループの全種が逆順に並んでいるケース
+        let src = concat!(
+            "module M {\n",
+            "  def f(): Unit = x\n",
+            "  reg r: Bit(8)\n",
+            "  output def g(): Bit(8)\n",
+            "  input a: Bit(8)\n",
+            "}",
+        );
+        let expected = concat!(
+            "module M {\n",
+            "  input a: Bit(8)\n",
+            "\n\n",
+            "  output def g(): Bit(8)\n",
+            "\n\n",
+            "  reg r: Bit(8)\n",
+            "\n\n",
+            "  def f(): Unit = x\n",
+            "}\n",
+        );
+        assert_eq!(format(src), Some(expected.to_string()));
+    }
+
+    #[test]
+    fn reorder_stable_within_group_inputs() {
+        // input/output は同じ G0、入れ替わらない
+        let src = "module M {\n  output a: Bit(8)\n  input b: Bit(8)\n}";
+        let expected = "module M {\n  output a: Bit(8)\n  input b: Bit(8)\n}\n";
+        assert_eq!(format(src), Some(expected.to_string()));
+    }
+
+    #[test]
+    fn reorder_stable_within_group_def_always() {
+        // def と always は同じ G3、入れ替わらない
+        let src = concat!(
+            "module M extends S {\n",
+            "  always { x }\n",
+            "  def f(): Unit = y\n",
+            "}",
+        );
+        let expected = concat!(
+            "module M extends S {\n",
+            "  always {\n",
+            "    x\n",
+            "  }\n",
+            "  def f(): Unit = y\n",
+            "}\n",
+        );
+        assert_eq!(format(src), Some(expected.to_string()));
+    }
+
+    #[test]
+    fn reorder_single_group_no_boundary_blanks() {
+        // 単一グループのみのモジュールにはグループ境界の空行 2 が登場しない
+        let src = "module M {\n  input a: Bit(8)\n  output b: Bit(8)\n}";
+        let expected = "module M {\n  input a: Bit(8)\n  output b: Bit(8)\n}\n";
+        assert_eq!(format(src), Some(expected.to_string()));
+    }
+
+    #[test]
+    fn reorder_leading_comment_follows_item() {
+        // input の直上コメントは input に追従して並び替え後も同じ位置に来る
+        let src = concat!(
+            "module M {\n",
+            "  def f(): Unit = x\n",
+            "  // hello\n",
+            "  input a: Bit(8)\n",
+            "}",
+        );
+        let expected = concat!(
+            "module M {\n",
+            "  // hello\n",
+            "  input a: Bit(8)\n",
+            "\n\n",
+            "  def f(): Unit = x\n",
+            "}\n",
+        );
+        assert_eq!(format(src), Some(expected.to_string()));
+    }
+
+    #[test]
+    fn reorder_trailing_inline_comment_follows_item() {
+        // def の末尾インラインコメントが def と一緒に動く
+        // 「  def f(): Unit = x」19 文字、`/` 候補は col 20 (偶数) なので 1 スペース
+        let src = concat!(
+            "module M {\n",
+            "  def f(): Unit = x // bye\n",
+            "  input a: Bit(8)\n",
+            "}",
+        );
+        let expected = concat!(
+            "module M {\n",
+            "  input a: Bit(8)\n",
+            "\n\n",
+            "  def f(): Unit = x // bye\n",
+            "}\n",
+        );
+        assert_eq!(format(src), Some(expected.to_string()));
+    }
+
+    #[test]
+    fn reorder_def_before_input_puts_input_first() {
+        // ソース順: def → input。G1 (input) を G4 (def) より先に並べる。
+        let src = "module M {\n  def f(): Unit = x\n  input a: Bit(8)\n}";
+        let expected = concat!(
+            "module M {\n",
+            "  input a: Bit(8)\n",
+            "\n\n",
+            "  def f(): Unit = x\n",
+            "}\n",
+        );
+        assert_eq!(format(src), Some(expected.to_string()));
+    }
+
+    #[test]
+    fn many_blank_lines_clamped_to_one_top_level() {
+        let src = "module A {}\n\n\n\nmodule B {}";
         let expected = "module A {}\n\nmodule B {}\n";
         assert_eq!(format(src), Some(expected.to_string()));
     }
@@ -905,6 +1378,23 @@ mod tests {
     }
 
     #[test]
+    fn unary_keeps_parens_around_binary_child() {
+        // `~(a ^ b)` の () は意味上必要（unary は binary より結合度が強いため）。
+        let src = "module M { val z = ~(a ^ b) & c }";
+        let expected = "module M {\n  val z = ~(a ^ b) & c\n}\n";
+        assert_eq!(format(src), Some(expected.to_string()));
+    }
+
+    #[test]
+    fn unary_keeps_parens_around_unary_child() {
+        // FSL コンパイラは `~|x` のような unary 連続をサポートしないため
+        // `~(|x)` の () を維持する。
+        let src = "module M { val z = ~(|x) }";
+        let expected = "module M {\n  val z = ~(|x)\n}\n";
+        assert_eq!(format(src), Some(expected.to_string()));
+    }
+
+    #[test]
     fn no_parens_for_same_prec_left() {
         // a - b - c は Sub(Sub(a,b), c)、左側は同優先度でも括弧不要
         let src = "module M { val z = a - b - c }";
@@ -923,6 +1413,20 @@ mod tests {
             "}\n",
         );
         assert_eq!(format(src), Some(expected.to_string()));
+    }
+
+    #[test]
+    fn alu32_sample_reparses_and_idempotent() {
+        // 並び替え順 (I/O → reg/mem/val → def) になっており、空行も正しい。
+        // 1 度整形した結果を再整形しても変わらない。
+        let src = include_str!("../../../fsl-sample/alu32-main/alu32.fsl");
+        let formatted = format(src).expect("alu32.fsl should format");
+        let (result, lex_errs) = fsl_parser::parse(&formatted);
+        assert!(lex_errs.is_empty(), "lex errors: {:?}", lex_errs);
+        assert!(result.errors.is_empty(), "parse errors: {:?}", result.errors);
+        // idempotent: 2 度目の整形でも変化しない
+        let formatted2 = format(&formatted).expect("second format");
+        assert_eq!(formatted, formatted2, "alu32.fsl is not idempotent under format");
     }
 
     #[test]
@@ -1013,14 +1517,31 @@ mod tests {
     }
 
     #[test]
-    fn trailing_line_comment_moves_above_field() {
-        // `input a: Bit(8) // hoge` の `// hoge` は AST span 外だが同一行末。
-        // 入れ子ブロックを持たない文の同一行末コメントは直上に移動する。
+    fn trailing_line_comment_stays_inline_val() {
+        // `val x = 1 // tag` は同一行維持。
+        // インデント込みで「  val x = 1」は 11 文字、`/` は col 12 (0-indexed, 偶数) で
+        // すでに最低 1 スペース条件を満たすので 1 スペース。
+        let src = "module M {\n  val x = 1 // tag\n}";
+        let expected = "module M {\n  val x = 1 // tag\n}\n";
+        assert_eq!(format(src), Some(expected.to_string()));
+    }
+
+    #[test]
+    fn trailing_block_comment_stays_inline_val() {
+        // `val x = 1 /* tag */` も同一行維持。
+        let src = "module M {\n  val x = 1 /* tag */\n}";
+        let expected = "module M {\n  val x = 1 /* tag */\n}\n";
+        assert_eq!(format(src), Some(expected.to_string()));
+    }
+
+    #[test]
+    fn trailing_line_comment_stays_inline_input() {
+        // `input a: Bit(8) // hoge` も同一行維持（旧 "上に移動" 挙動の差し替え）。
+        // 「  input a: Bit(8)」は 17 文字、`/` を col 18 (偶数) に置くため 1 スペース。
         let src = "module M {\n  input a: Bit(8) // hoge\n  input b: Bit(8)\n}";
         let expected = concat!(
             "module M {\n",
-            "  // hoge\n",
-            "  input a: Bit(8)\n",
+            "  input a: Bit(8) // hoge\n",
             "  input b: Bit(8)\n",
             "}\n",
         );
@@ -1028,14 +1549,91 @@ mod tests {
     }
 
     #[test]
-    fn trailing_line_comment_moves_above_stmt_in_block() {
-        // ブロック内文 `cout = m; // bar` も同様に直上に移動
+    fn trailing_line_comment_stays_inline_reg() {
+        // `reg count: Bit(8) // c`
+        // 「  reg count: Bit(8)」は 19 文字、`/` は col 20 (偶数) で 1 スペース。
+        let src = "module M {\n  reg count: Bit(8) // c\n}";
+        let expected = "module M {\n  reg count: Bit(8) // c\n}\n";
+        assert_eq!(format(src), Some(expected.to_string()));
+    }
+
+    #[test]
+    fn one_blank_at_group_boundary_preserved() {
+        // グループ境界でも 1 空行を維持（強制 2 行に増やさない）。
+        let src = "module M {\n  input a: Bit(8)\n\n  val x = 1\n}";
+        let expected = "module M {\n  input a: Bit(8)\n\n  val x = 1\n}\n";
+        assert_eq!(format(src), Some(expected.to_string()));
+    }
+
+    #[test]
+    fn two_blanks_at_group_boundary_preserved() {
+        // ソースに 2 空行があれば 2 空行を維持。
+        let src = "module M {\n  input a: Bit(8)\n\n\n  val x = 1\n}";
+        let expected = "module M {\n  input a: Bit(8)\n\n\n  val x = 1\n}\n";
+        assert_eq!(format(src), Some(expected.to_string()));
+    }
+
+    #[test]
+    fn three_blanks_at_group_boundary_clamped_to_two() {
+        let src = "module M {\n  input a: Bit(8)\n\n\n\n  val x = 1\n}";
+        let expected = "module M {\n  input a: Bit(8)\n\n\n  val x = 1\n}\n";
+        assert_eq!(format(src), Some(expected.to_string()));
+    }
+
+    #[test]
+    fn one_blank_line_preserved_between_fields() {
+        let src = "module M {\n  val x = 1\n\n  val y = 2\n}";
+        let expected = "module M {\n  val x = 1\n\n  val y = 2\n}\n";
+        assert_eq!(format(src), Some(expected.to_string()));
+    }
+
+    #[test]
+    fn no_blank_line_between_adjacent_fields() {
+        let src = "module M {\n  val x = 1\n  val y = 2\n}";
+        let expected = "module M {\n  val x = 1\n  val y = 2\n}\n";
+        assert_eq!(format(src), Some(expected.to_string()));
+    }
+
+    #[test]
+    fn two_blank_lines_clamped_to_one_within_group() {
+        let src = "module M {\n  val x = 1\n\n\n  val y = 2\n}";
+        let expected = "module M {\n  val x = 1\n\n  val y = 2\n}\n";
+        assert_eq!(format(src), Some(expected.to_string()));
+    }
+
+    #[test]
+    fn many_blank_lines_clamped_to_one_within_group() {
+        let src = "module M {\n  val x = 1\n\n\n\n\n  val y = 2\n}";
+        let expected = "module M {\n  val x = 1\n\n  val y = 2\n}\n";
+        assert_eq!(format(src), Some(expected.to_string()));
+    }
+
+    #[test]
+    fn trailing_line_comment_alignment_two_spaces() {
+        // インデント込みで「  val x = 12」12 文字、`/` を col 14 (偶数) に置くため 2 スペース。
+        let src = "module M {\n  val x = 12 // tag\n}";
+        let expected = "module M {\n  val x = 12  // tag\n}\n";
+        assert_eq!(format(src), Some(expected.to_string()));
+    }
+
+    #[test]
+    fn trailing_line_comment_stays_inline_mem() {
+        // `mem [Bit(70)] pat(16) // m`
+        // 「  mem [Bit(70)] pat(16)」23 文字、`/` は col 24 (偶数) で 1 スペース。
+        let src = "module M extends S {\n  mem [Bit(70)] pat(16) // m\n}";
+        let expected = "module M extends S {\n  mem [Bit(70)] pat(16) // m\n}\n";
+        assert_eq!(format(src), Some(expected.to_string()));
+    }
+
+    #[test]
+    fn trailing_line_comment_stays_inline_stmt_in_block() {
+        // ブロック内文 `cout = m // bar` もインライン維持。
+        // 「    cout = m」12 文字、`/` を col 14 (偶数) に置くため 2 スペース。
         let src = "module M extends S {\n  always {\n    cout = m // bar\n    sum = n\n  }\n}";
         let expected = concat!(
             "module M extends S {\n",
             "  always {\n",
-            "    // bar\n",
-            "    cout = m\n",
+            "    cout = m  // bar\n",
             "    sum = n\n",
             "  }\n",
             "}\n",
