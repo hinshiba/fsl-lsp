@@ -286,16 +286,11 @@ impl<'a> Writer<'a> {
             let cur_g = field_group(&items[i].inner);
             if let Some((pg, p_idx)) = prev {
                 // 同一グループ: ソース空行を max 1 で保存。
-                // グループ境界 (ソース順維持): ソース空行を max 2 で保存。
-                // グループ境界 (並び替え発生): 強制 2 空行（視覚分離のため）。
+                // グループ境界: ソース空行に関わらず強制 2 空行（視覚分離のため）。
                 let prev_end = items[p_idx].span.end;
                 let next_start = items[i].span.start;
                 let blanks = if pg != cur_g {
-                    if prev_end > next_start {
-                        2
-                    } else {
-                        self.count_blank_lines_between(prev_end, next_start).min(2)
-                    }
+                    2
                 } else {
                     self.count_blank_lines_between(prev_end, next_start).min(1)
                 };
@@ -374,6 +369,13 @@ impl<'a> Writer<'a> {
                     result[i].1 = Some(next);
                     next += 1;
                 }
+            }
+
+            // ネストブロックを持つ field の body 内コメントは、外側で取り込まず
+            // 内側 (write_block 等) に flush_comments_before で処理させる。
+            // 並び替えで後続フィールドに剥がされないよう、カーソルだけ進める。
+            while next < self.comments.len() && self.comments[next].0 < span_end {
+                next += 1;
             }
         }
 
@@ -746,15 +748,24 @@ impl<'a> Writer<'a> {
 
     /// 文の連なりを `{ ... }` ブロックとして整形（K&R）。
     /// 空かつコメントなしなら `{}` 単一行。末尾コメントはブロック内に保持。
+    /// 文間のソース空行は max 1 で保存する（モジュール同一グループと同ポリシー）。
     fn write_block(&mut self, stmts: &[Expr], block_end: usize, depth: usize) {
         if stmts.is_empty() && !self.has_comments_before(block_end) {
             self.out.push_str("{}");
             return;
         }
         self.out.push_str("{\n");
+        let mut prev_end: Option<usize> = None;
         for s in stmts {
             // 式内コメントは直上に持ち上げ、同一物理行末のトレイリングはインライン維持。
             let limit = self.inline_limit_for_expr(s, block_end);
+            if let Some(pe) = prev_end {
+                // 直前 stmt 終端〜現 stmt のコメント前位置の空行を max 1 で保存
+                let blanks = self.count_blank_lines_between(pe, limit).min(1);
+                for _ in 0..blanks {
+                    self.out.push('\n');
+                }
+            }
             self.flush_comments_before(limit, depth + 1);
             self.write_indent(depth + 1);
             self.write_expr(s, depth + 1);
@@ -764,6 +775,7 @@ impl<'a> Writer<'a> {
                 }
             }
             self.out.push('\n');
+            prev_end = Some(s.span.end);
         }
         // ブロック末尾コメントを `}` 直前に
         self.flush_comments_before(block_end, depth + 1);
@@ -1558,16 +1570,24 @@ mod tests {
     }
 
     #[test]
-    fn one_blank_at_group_boundary_preserved() {
-        // グループ境界でも 1 空行を維持（強制 2 行に増やさない）。
-        let src = "module M {\n  input a: Bit(8)\n\n  val x = 1\n}";
-        let expected = "module M {\n  input a: Bit(8)\n\n  val x = 1\n}\n";
+    fn zero_blank_at_group_boundary_forced_to_two() {
+        // 並び替え非発生でもグループ境界では強制 2 空行（新仕様）。
+        let src = "module M {\n  input a: Bit(8)\n  val x = 1\n}";
+        let expected = "module M {\n  input a: Bit(8)\n\n\n  val x = 1\n}\n";
         assert_eq!(format(src), Some(expected.to_string()));
     }
 
     #[test]
-    fn two_blanks_at_group_boundary_preserved() {
-        // ソースに 2 空行があれば 2 空行を維持。
+    fn one_blank_at_group_boundary_forced_to_two() {
+        // ソース 1 空行 → 出力 2 空行に拡張（新仕様）。
+        let src = "module M {\n  input a: Bit(8)\n\n  val x = 1\n}";
+        let expected = "module M {\n  input a: Bit(8)\n\n\n  val x = 1\n}\n";
+        assert_eq!(format(src), Some(expected.to_string()));
+    }
+
+    #[test]
+    fn two_blanks_at_group_boundary_kept_two() {
+        // ソース 2 空行 → 出力 2 空行。
         let src = "module M {\n  input a: Bit(8)\n\n\n  val x = 1\n}";
         let expected = "module M {\n  input a: Bit(8)\n\n\n  val x = 1\n}\n";
         assert_eq!(format(src), Some(expected.to_string()));
@@ -1622,6 +1642,103 @@ mod tests {
         // 「  mem [Bit(70)] pat(16)」23 文字、`/` は col 24 (偶数) で 1 スペース。
         let src = "module M extends S {\n  mem [Bit(70)] pat(16) // m\n}";
         let expected = "module M extends S {\n  mem [Bit(70)] pat(16) // m\n}\n";
+        assert_eq!(format(src), Some(expected.to_string()));
+    }
+
+    #[test]
+    fn one_blank_line_preserved_inside_block() {
+        // ブロック内の文間 1 空行を保存。
+        let src = concat!(
+            "module M {\n",
+            "  def f(): Unit = {\n",
+            "    val a = 1\n",
+            "\n",
+            "    val b = 2\n",
+            "  }\n",
+            "}",
+        );
+        let expected = concat!(
+            "module M {\n",
+            "  def f(): Unit = {\n",
+            "    val a = 1\n",
+            "\n",
+            "    val b = 2\n",
+            "  }\n",
+            "}\n",
+        );
+        assert_eq!(format(src), Some(expected.to_string()));
+    }
+
+    #[test]
+    fn two_blank_lines_clamped_to_one_inside_block() {
+        // ブロック内の文間 2 空行は 1 行に圧縮。
+        let src = concat!(
+            "module M {\n",
+            "  def f(): Unit = {\n",
+            "    val a = 1\n",
+            "\n",
+            "\n",
+            "    val b = 2\n",
+            "  }\n",
+            "}",
+        );
+        let expected = concat!(
+            "module M {\n",
+            "  def f(): Unit = {\n",
+            "    val a = 1\n",
+            "\n",
+            "    val b = 2\n",
+            "  }\n",
+            "}\n",
+        );
+        assert_eq!(format(src), Some(expected.to_string()));
+    }
+
+    #[test]
+    fn no_blank_line_between_adjacent_stmts_in_block() {
+        // ブロック内の隣接文 (0 空行) は 0 空行のまま。
+        let src = concat!(
+            "module M {\n",
+            "  def f(): Unit = {\n",
+            "    val a = 1\n",
+            "    val b = 2\n",
+            "  }\n",
+            "}",
+        );
+        let expected = concat!(
+            "module M {\n",
+            "  def f(): Unit = {\n",
+            "    val a = 1\n",
+            "    val b = 2\n",
+            "  }\n",
+            "}\n",
+        );
+        assert_eq!(format(src), Some(expected.to_string()));
+    }
+
+    #[test]
+    fn reorder_keeps_block_body_comments_inside() {
+        // def の body 内コメント (トレイリング含む) が並び替えで剥離せず body 内に残る。
+        // 「    val a = 1」は 11 文字、`/` を col 12 (偶数) に置くため 1 スペース。
+        let src = concat!(
+            "module M {\n",
+            "  def f(): Unit = {\n",
+            "    val a = 1 // tag\n",
+            "    /* foo */\n",
+            "  }\n",
+            "  output cout: Bit(1)\n",
+            "}",
+        );
+        let expected = concat!(
+            "module M {\n",
+            "  output cout: Bit(1)\n",
+            "\n\n",
+            "  def f(): Unit = {\n",
+            "    val a = 1 // tag\n",
+            "    /* foo */\n",
+            "  }\n",
+            "}\n",
+        );
         assert_eq!(format(src), Some(expected.to_string()));
     }
 
