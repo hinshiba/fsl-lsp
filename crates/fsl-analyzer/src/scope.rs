@@ -3,7 +3,7 @@
 //! モジュール → 関数/always/initial/stage → ブロック の階層をアリーナ方式で保持する．
 //! 各スコープは span を持つため，offset から最深スコープを検索できる．
 
-use crate::span::{contains, Span};
+use crate::span::{Span, contains};
 use crate::symbol::DefId;
 
 /// `ScopeArena.scopes` のインデックス
@@ -46,12 +46,7 @@ pub struct ScopeArena {
 impl ScopeArena {
     /// 新しいスコープを作成して ID を返す
     /// 親があれば親の `children` にも登録する
-    pub fn new_scope(
-        &mut self,
-        parent: Option<ScopeId>,
-        kind: ScopeKind,
-        span: Span,
-    ) -> ScopeId {
+    pub fn new_scope(&mut self, parent: Option<ScopeId>, kind: ScopeKind, span: Span) -> ScopeId {
         let id = ScopeId(self.scopes.len() as u32);
         self.scopes.push(Scope {
             id,

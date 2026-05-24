@@ -42,8 +42,6 @@ enum Command {
         #[command(flatten)]
         input: InputArgs,
     },
-    /// LSP クレートのスタブ情報を表示する
-    Lsp,
     /// すべての段階を順に実行する
     All {
         #[command(flatten)]
@@ -94,9 +92,7 @@ fn run(cli: Cli) -> Result<(), String> {
             print_header("ANALYZE", &path);
             run_analyze(&src);
         }
-        Command::Lsp => {
-            run_lsp();
-        }
+
         Command::All { input } => {
             let (path, src) = load_input(&input)?;
             print_header("LEX", &path);
@@ -108,7 +104,6 @@ fn run(cli: Cli) -> Result<(), String> {
             print_header("ANALYZE", &path);
             run_analyze(&src);
             println!();
-            run_lsp();
         }
         Command::Samples => {
             list_samples()?;
@@ -165,12 +160,7 @@ fn run_parse(src: &str) {
 fn run_analyze(src: &str) {
     let result = analyze(src);
     println!("top-level symbols ({}):", result.symbols.symbols.len());
-    let mut names: Vec<&String> = result.symbols.symbols.iter().map(|s| &s.name).collect();
-    names.sort();
-    for name in names {
-        let sym = result
-            .symbols
-            .lookup_in(result.symbols.scopes.get(id), name);
+    for sym in result.symbols.symbols {
         println!(
             "  {} :: {:?} @ {}",
             sym.name,
