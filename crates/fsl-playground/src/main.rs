@@ -122,15 +122,23 @@ fn run(cli: Cli) -> Result<(), String> {
 // ============================================================
 
 fn run_lex(src: &str, strip: bool) {
-    let (tokens, errors) = lex(src);
-    let tokens = if strip { strip_trivia(tokens) } else { tokens };
+    let result = lex(src);
+    let tokens = if strip {
+        strip_trivia(result.oks)
+    } else {
+        result.oks
+    };
+
+    // 正常側
     println!("tokens ({}):", tokens.len());
-    for (tok, span) in &tokens {
-        println!("  {:?} @ {}", tok, fmt_span(span));
+    for tok in tokens {
+        println!("  {:?} @ {}", tok.tok, fmt_span(&tok.span));
     }
-    if !errors.is_empty() {
-        println!("lex errors ({}):", errors.len());
-        for span in &errors {
+
+    // エラー側
+    if !result.errs.is_empty() {
+        println!("lex errors ({}):", result.errs.len());
+        for span in &result.errs {
             println!("  invalid @ {}", fmt_span(span));
         }
     }
@@ -155,25 +163,14 @@ fn run_parse(src: &str) {
 }
 
 fn run_analyze(src: &str) {
-    let (parsed, lex_errors) = parse(src);
-    if !lex_errors.is_empty() {
-        println!("lex errors ({}):", lex_errors.len());
-        for span in &lex_errors {
-            println!("  invalid @ {}", fmt_span(span));
-        }
-    }
-    if !parsed.errors.is_empty() {
-        println!("parse errors ({}):", parsed.errors.len());
-        for e in &parsed.errors {
-            println!("  {} @ {}", e.message, fmt_span(&e.span));
-        }
-    }
-    let result = analyze(&parsed.unit);
-    println!("top-level symbols ({}):", result.top.symbols.len());
-    let mut names: Vec<&String> = result.top.symbols.keys().collect();
+    let result = analyze(src);
+    println!("top-level symbols ({}):", result.symbols.symbols.len());
+    let mut names: Vec<&String> = result.symbols.symbols.iter().map(|s| &s.name).collect();
     names.sort();
     for name in names {
-        let sym = &result.top.symbols[name];
+        let sym = result
+            .symbols
+            .lookup_in(result.symbols.scopes.get(id), name);
         println!(
             "  {} :: {:?} @ {}",
             sym.name,
@@ -191,15 +188,6 @@ fn run_analyze(src: &str) {
         );
         let _: &Diagnostic = d;
     }
-}
-
-fn run_lsp() {
-    print_header("LSP", Path::new("(crate stub)"));
-    println!(
-        "fsl-ls クレートは tower-lsp を依存に持つが，現状サーバ実装は未着手．\n\
-         crate version: {}",
-        env!("CARGO_PKG_VERSION")
-    );
 }
 
 // ============================================================
