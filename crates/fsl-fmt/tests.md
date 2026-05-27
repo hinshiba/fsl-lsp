@@ -50,6 +50,17 @@ t_wada 流 TDD のテストリスト。1 サイクル (Red → Green → Refacto
 - [x] `val name = expr` 宣言を整形
 - [x] タプル型 `(T1, T2)` を整形
 - [x] `Array[T]` / `List[T]` / `Bit(N)` 型を整形
+- [x] **`any { cond: body ... }`**: 各アームを 1 行で出力，`else: body` も対応．本体を破棄しない
+- [x] **`alt { cond: body ... }`**: any と同形式
+- [x] **`generate stage(args)`** を整形
+- [x] **`relay stage(args)`** を整形
+- [x] **`finish`** を整形
+- [x] **`goto state`** を整形
+
+### リテラル
+- [x] **2 進ビットリテラル `0b10` は原文を保存**: AST が幅情報を失っているため `e.span` の元ソースを直接出力する
+- [x] **16 進ビットリテラル `0x0f` も原文を保存**: 同上（旧仕様 `0x{:x}` で発生していた leading zero 喪失を防ぐ）
+- [x] **`match` パターン中の 2 進ビットリテラル `case 0b00 => ...` も原文保存**
 
 ### 演算子優先順位
 - [x] 必要な括弧は維持、不要な括弧は除去しない（パース木の構造を保つ）

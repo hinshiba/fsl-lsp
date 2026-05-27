@@ -609,9 +609,10 @@ impl<'a> Writer<'a> {
     fn write_expr(&mut self, e: &Expr, depth: usize) {
         match &e.inner {
             Expr_::IntLit(n) => self.out.push_str(&n.to_string()),
-            Expr_::BitLit(n) => {
-                // ビット幅情報は AST に残らないため hex で出力する
-                self.out.push_str(&format!("0x{:x}", n));
+            Expr_::BitLit(_) => {
+                // ビット幅情報は AST に残らないため，元ソースの表記を直接保つ
+                // （`0b...` / `0x...` のプレフィックスと leading zero を維持）
+                self.out.push_str(&self.src[e.span.start..e.span.end]);
             }
             Expr_::Variable(name) => self.out.push_str(&name.inner),
             Expr_::Binary(op, lhs, rhs) => {
@@ -703,7 +704,7 @@ impl<'a> Writer<'a> {
                     self.flush_comments_before(arm.span.end, depth + 1);
                     self.write_indent(depth + 1);
                     self.out.push_str("case ");
-                    write_pattern(&arm.inner.pattern, &mut self.out);
+                    self.write_pattern(&arm.inner.pattern, arm.span.start, arm.span.end);
                     self.out.push_str(" => ");
                     self.write_expr(&arm.inner.body, depth + 1);
                     self.out.push('\n');
@@ -719,9 +720,119 @@ impl<'a> Writer<'a> {
                 self.out.push_str(&name.inner);
             }
             Expr_::Unit => {}
-            // TODO: Any, Alt, Generate, Relay, Finish, Goto, Error
-            _ => {}
+            Expr_::Any(arms, els) => {
+                self.write_cases("any", arms, els.as_deref(), e.span.end, depth)
+            }
+            Expr_::Alt(arms, els) => {
+                self.write_cases("alt", arms, els.as_deref(), e.span.end, depth)
+            }
+            Expr_::Generate(name, args) => self.write_stage_call("generate", name, args, depth),
+            Expr_::Relay(name, args) => self.write_stage_call("relay", name, args, depth),
+            Expr_::Finish => self.out.push_str("finish"),
+            Expr_::Goto(name) => {
+                self.out.push_str("goto ");
+                self.out.push_str(&name.inner);
+            }
+            Expr_::Error => {}
         }
+    }
+
+    /// `any` / `alt` 共通の整形。`keyword { cond: body ... else: body }`。
+    /// 空かつコメントなしなら `{}` 単一行に縮約する。
+    fn write_cases(
+        &mut self,
+        keyword: &str,
+        arms: &[Spanned<fsl_parser::Case>],
+        els: Option<&Expr>,
+        block_end: usize,
+        depth: usize,
+    ) {
+        self.out.push_str(keyword);
+        if arms.is_empty() && els.is_none() && !self.has_comments_before(block_end) {
+            self.out.push_str(" {}");
+            return;
+        }
+        self.out.push_str(" {\n");
+        for arm in arms {
+            self.flush_comments_before(arm.span.end, depth + 1);
+            self.write_indent(depth + 1);
+            self.write_expr(&arm.inner.cond, depth + 1);
+            self.out.push_str(": ");
+            self.write_expr(&arm.inner.body, depth + 1);
+            self.out.push('\n');
+        }
+        if let Some(el) = els {
+            self.flush_comments_before(el.span.end, depth + 1);
+            self.write_indent(depth + 1);
+            self.out.push_str("else: ");
+            self.write_expr(el, depth + 1);
+            self.out.push('\n');
+        }
+        self.flush_comments_before(block_end, depth + 1);
+        self.write_indent(depth);
+        self.out.push('}');
+    }
+
+    /// match arm 内のパターンを整形。BitLit はビット幅情報を AST に持たないため，
+    /// `[arm_start, arm_end)` の `=>` より前の領域から `0b...` / `0x...` 表記を
+    /// 直接取り出して保存する（フォールバックは `0x{hex}`）。
+    fn write_pattern(&mut self, p: &Pattern, arm_start: usize, arm_end: usize) {
+        match p {
+            Pattern::Wildcard => self.out.push('_'),
+            Pattern::Ident(name) => self.out.push_str(&name.inner),
+            Pattern::IntLit(n) => self.out.push_str(&n.to_string()),
+            Pattern::BitLit(n) => {
+                let text = self
+                    .find_pattern_bit_lit_text(arm_start, arm_end)
+                    .map(str::to_string)
+                    .unwrap_or_else(|| format!("0x{:x}", n));
+                self.out.push_str(&text);
+            }
+        }
+    }
+
+    /// arm のソース範囲から `=>` より前にある最初のビットリテラル token を取り出す。
+    /// `0b[01_]+` または `0x[0-9a-fA-F_]+` を識別子境界で切り出す。
+    fn find_pattern_bit_lit_text(&self, start: usize, end: usize) -> Option<&str> {
+        let slice = &self.src[start..end];
+        let pat_end = slice.find("=>").unwrap_or(slice.len());
+        let pat = &slice[..pat_end];
+        let bytes = pat.as_bytes();
+        for prefix in ["0b", "0x"] {
+            if let Some(i) = pat.find(prefix) {
+                // 先行が英数字なら識別子の途中とみなしスキップ
+                if i > 0 && bytes[i - 1].is_ascii_alphanumeric() {
+                    continue;
+                }
+                let mut j = i + 2;
+                while j < bytes.len() && (bytes[j].is_ascii_alphanumeric() || bytes[j] == b'_') {
+                    j += 1;
+                }
+                return Some(&pat[i..j]);
+            }
+        }
+        None
+    }
+
+    /// `generate` / `relay` 共通の整形。`keyword name(args)`。
+    fn write_stage_call(
+        &mut self,
+        keyword: &str,
+        name: &fsl_parser::Ident,
+        args: &[Expr],
+        depth: usize,
+    ) {
+        self.out.push_str(keyword);
+        self.out.push(' ');
+        self.out.push_str(&name.inner);
+        self.out.push('(');
+        for (i, a) in args.iter().enumerate() {
+            if i > 0 {
+                self.out.push_str(", ");
+            }
+            self.write_expr(a, depth);
+        }
+        self.out.push(')');
     }
 
     /// 二項演算の子オペランドを出力。親の優先度・左右位置に応じて括弧を挿入。
@@ -828,14 +939,6 @@ impl<'a> Writer<'a> {
 // 自由関数（Writer 状態に依存しない補助）
 // ============================================================
 
-fn write_pattern(p: &Pattern, out: &mut String) {
-    match p {
-        Pattern::Wildcard => out.push('_'),
-        Pattern::Ident(name) => out.push_str(&name.inner),
-        Pattern::IntLit(n) => out.push_str(&n.to_string()),
-        Pattern::BitLit(n) => out.push_str(&format!("0x{:x}", n)),
-    }
-}
 
 /// `Option<usize>` の最小値を取る。両方 None なら None。
 fn min_opt(a: Option<usize>, b: Option<usize>) -> Option<usize> {
@@ -1114,10 +1217,43 @@ mod tests {
     }
 
     #[test]
-    fn bit_literal_as_hex() {
-        // BitLit はビット幅情報を失っているため一律 0x<hex> で出力
+    fn bit_literal_hex_preserves_source() {
+        // BitLit はビット幅情報を AST に持たないため，元ソースの表記を直接保つ
         let src = "module M { val z = 0x10 }";
         let expected = "module M {\n  val z = 0x10\n}\n";
+        assert_eq!(format(src), Some(expected.to_string()));
+    }
+
+    #[test]
+    fn bit_literal_binary_preserves_source() {
+        // 2 進ビットリテラルは 16 進に変換せず原文を保つ
+        let src = "module M { val z = 0b10 }";
+        let expected = "module M {\n  val z = 0b10\n}\n";
+        assert_eq!(format(src), Some(expected.to_string()));
+    }
+
+    #[test]
+    fn bit_literal_hex_preserves_leading_zero() {
+        // `0x0f` の leading zero も保持（ビット幅情報の代替として価値があるため）
+        let src = "module M { val z = 0x0f }";
+        let expected = "module M {\n  val z = 0x0f\n}\n";
+        assert_eq!(format(src), Some(expected.to_string()));
+    }
+
+    #[test]
+    fn pattern_bit_literal_binary_preserves_source() {
+        // match パターン中の 2 進リテラルも原文保持
+        let src = "module M extends S { always { f match { case 0b00 => a case 0b01 => b } } }";
+        let expected = concat!(
+            "module M extends S {\n",
+            "  always {\n",
+            "    f match {\n",
+            "      case 0b00 => a\n",
+            "      case 0b01 => b\n",
+            "    }\n",
+            "  }\n",
+            "}\n",
+        );
         assert_eq!(format(src), Some(expected.to_string()));
     }
 
@@ -1739,6 +1875,72 @@ mod tests {
             "  }\n",
             "}\n",
         );
+        assert_eq!(format(src), Some(expected.to_string()));
+    }
+
+    // ============================================================
+    // any / alt / generate / relay / finish / goto ブロック式
+    // 旧実装は write_expr の `_ => {}` で本体を破棄していた
+    // ============================================================
+
+    #[test]
+    fn any_block_preserves_arms_and_else() {
+        let src = "module M extends S { always { any { a: x b: y else: z } } }";
+        let expected = concat!(
+            "module M extends S {\n",
+            "  always {\n",
+            "    any {\n",
+            "      a: x\n",
+            "      b: y\n",
+            "      else: z\n",
+            "    }\n",
+            "  }\n",
+            "}\n",
+        );
+        assert_eq!(format(src), Some(expected.to_string()));
+    }
+
+    #[test]
+    fn alt_block_preserves_arms() {
+        let src = "module M extends S { always { alt { a: x b: y } } }";
+        let expected = concat!(
+            "module M extends S {\n",
+            "  always {\n",
+            "    alt {\n",
+            "      a: x\n",
+            "      b: y\n",
+            "    }\n",
+            "  }\n",
+            "}\n",
+        );
+        assert_eq!(format(src), Some(expected.to_string()));
+    }
+
+    #[test]
+    fn finish_in_seq_block() {
+        let src = "module M { def f(): Unit seq { finish } }";
+        let expected = "module M {\n  def f(): Unit seq {\n    finish\n  }\n}\n";
+        assert_eq!(format(src), Some(expected.to_string()));
+    }
+
+    #[test]
+    fn goto_in_seq_block() {
+        let src = "module M { def f(): Unit seq { goto st1 } }";
+        let expected = "module M {\n  def f(): Unit seq {\n    goto st1\n  }\n}\n";
+        assert_eq!(format(src), Some(expected.to_string()));
+    }
+
+    #[test]
+    fn generate_call_in_seq_block() {
+        let src = "module M { def f(): Unit seq { generate STAGE(a, b) } }";
+        let expected = "module M {\n  def f(): Unit seq {\n    generate STAGE(a, b)\n  }\n}\n";
+        assert_eq!(format(src), Some(expected.to_string()));
+    }
+
+    #[test]
+    fn relay_call_in_seq_block() {
+        let src = "module M { def f(): Unit seq { relay STAGE(x) } }";
+        let expected = "module M {\n  def f(): Unit seq {\n    relay STAGE(x)\n  }\n}\n";
         assert_eq!(format(src), Some(expected.to_string()));
     }
 
